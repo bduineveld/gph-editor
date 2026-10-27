@@ -248,6 +248,27 @@ def _export_images(sec, f, base):
 
 
 # ---------------------------------------------------------------------------
+def cmd_inf(args):
+    from .inf import InfFile, write_inf_for
+    rc = 0
+    for p in args.paths:
+        if args.action == "verify":
+            if not os.path.exists(p + ".inf"):
+                print(f"??  {p}: no .inf")
+                rc = 1
+                continue
+            text_ok, data_ok = InfFile.verify_files(p)
+            inf = InfFile.load(p + ".inf")
+            size_ok = inf.size == os.path.getsize(p)
+            ok = text_ok and data_ok and size_ok
+            rc = rc or (0 if ok else 1)
+            print(f"{'OK ' if ok else 'BAD'} {p}: text_crc={'ok' if text_ok else 'BAD'} data_crc={'ok' if data_ok else 'BAD'} size={'ok' if size_ok else 'BAD'} VER={inf.fields.get('VER')}")
+        else:
+            inf = write_inf_for(p, version=args.version)
+            print(f"written {p}.inf: {inf.checksum} SIZE={inf.size} VER={inf.fields.get('VER')}")
+    return rc
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="gph", description="Inspect and export Magneti Marelli GPH files")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -284,6 +305,12 @@ def main(argv=None):
     s.add_argument("--theme")
     s.add_argument("--no-images", action="store_true")
     s.set_defaults(fn=cmd_export)
+
+    s = sub.add_parser("inf", help="verify or (re)write the .inf side-car of data files")
+    s.add_argument("action", choices=["verify", "write"])
+    s.add_argument("paths", nargs="+", help="the data files (e.g. GEN_HA00.gph.bz2), not the .inf")
+    s.add_argument("--version", help="VER field to write, yy.mm.dd.hh.mm (default: keep existing or now)")
+    s.set_defaults(fn=cmd_inf)
 
     args = ap.parse_args(argv)
     rc = args.fn(args)

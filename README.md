@@ -19,7 +19,9 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
   to PNG/GIF/text.
 * Links between files are resolved (menu → text index → language text, colours, fonts,
   image → texture).
-* Not yet: editing/encoding items, texture encoding, the `.inf` checksum, a GUI.
+* The `.inf` side-car checksum is understood (two 16-bit CRCs, recovered from GPH_EDITOR.exe)
+  and can be verified and written: `gph inf verify FILE.gph.bz2`, `gph inf write FILE.gph.bz2`.
+* Not yet: editing/encoding items, texture encoding, a GUI.
 
 ## Install
 

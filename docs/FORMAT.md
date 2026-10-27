@@ -241,16 +241,35 @@ ENTRY:NO
 SUBVER:
 ```
 
-`SIZE` is the size of the `.gph.bz2`.  The checksum is **not** CRC-32 (ISO-HDLC), nor
-CRC-32/BZIP2, MPEG-2, POSIX, JAMCRC, CRC-32C/D/Q, XFER, AUTOSAR, Adler-32 or a plain byte/word
-sum, of either the compressed or the decompressed data (all tried).  GPH_EDITOR rewrites
-the `.inf` when saving, so the algorithm can be recovered by decompiling
-`GPH_EDITOR.exe` (Ultimate++ application) with Ghidra.  Until then, a modified file needs
-its `.inf` written by GPH_EDITOR, or the unit's check has to be shown not to matter.
+`SIZE` is the size of the `.gph.bz2`.  The first line is **two 16-bit checksums**, not one
+32-bit CRC (which is why no CRC-32 variant matched).  Recovered by decompiling
+`GPH_EDITOR.exe` with Ghidra (functions `0x4cb6b0`, `0x4cb750`, `0x4cb7b0`; table at
+`0x634ab8`) and verified on factory `.inf` files from 2012/2015/2016 and on Magneti
+Marelli's own `builtinsRNEG.out.inf`:
+
+* hex digits 5–8: `crc16(data)` over the complete data file (the `.bz2` bytes);
+* hex digits 1–4: `crc16(inf[4:])` over the `.inf` file itself from byte 4 to the end
+  (so over the data checksum digits and every following line, line endings included).
+
+`crc16` is MSB-first, initial value 0, no final xor, with a 256-entry table `T`:
+
+```
+crc = T[crc >> 8] ^ T[byte] ^ (crc << 8)      (16 bit)
+```
+
+`T` is linear and equals the *reflected* CRC-16 table for polynomial `0xD415` with each
+entry byte-swapped (`T[1] = 0xDF2B`, `T[128] = 0x15D4`).  GPH_EDITOR writes the `.inf` in
+three steps: compute the data checksum and patch digits 5–8, replace the `SIZE:` line,
+then compute the text checksum over bytes 4..end and patch digits 1–4.  When no `.inf`
+exists it starts from `00000000 / VER:08.08.10.10.10 / TYPE:DATA / COMPRESSED:NO / SIZE:0 /
+ENTRY:NO / SUBVER:`.  Factory files use LF line endings, GPH_EDITOR's template CRLF; both
+verify because the text checksum covers whatever bytes are there.
+
+Implementation: [`src/gph/inf.py`](../src/gph/inf.py) (`crc16`, `InfFile.update`,
+`write_inf_for`).
 
 ## 8. Open questions
 
-* `.inf` checksum algorithm (§7).
 * Meaning of the stamp bytes (§2.1) and whether the unit validates them.
 * `FBAR2000` bytes 56..59 (`FF FF FF FF`) and the element type of its third (always null) table.
 * `BFNT2000` glyph record first word ("baseline"?) is 0 everywhere; GPH_EDITOR's export
