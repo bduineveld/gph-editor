@@ -1,0 +1,22 @@
+# Original GPH files are copyrighted Magneti Marelli / PSA content: never commit them.
+samples/
+*.gph
+*.gph.bz2
+*.gph.bz2.inf
+export/
+out/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
