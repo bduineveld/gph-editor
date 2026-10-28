@@ -167,6 +167,7 @@ Summary (after the 4 byte relocation header; `ptr→` = pointer to):
 | `SEBR2000` selectable bar | u32 level, link cursor_font, char[4] text_module, 5 × u16, 7 × u8, pad3, 8 ptr→ tables |
 | `CRZO2002` crossroad | u32 overall, u16 x, y, zoom_width, zoom_height, u32 map_context, link bg_image, link bg_color, u16 bg_presence, pad2 |
 | `FBTN2006` / `CBTN2006` buttons | u32 level, link font, link text_index, u16 x, y, text_dx, text_dy, u8 style, image_count, text_color_count, alignment, 2 ptr→ link tables |
+| | `alignment` 0: the text is centred on `x + text_dx` (every factory button with alignment 0 has `text_dx` = image width / 2); 1: the text starts at `x + text_dx` (`text_dx` 7–10, or 45 on check buttons to leave room for the box). `text_dy` is the top of the text. |
 | `DBTN2001` dynamic button | u32 level, link font, link arrow_image, 8 × u16, u8 style, image_count, text_color_count, alignment, scroll_behavior, pad3, 2 ptr→ link tables |
 | `DCBT2000` | u32 level, link font, 5 × u16, 4 × u8, pad2, 2 ptr→ link tables |
 | `ICBT2000` | u32 level, link font, 5 × u16, 6 × u8, 2 ptr→ link tables |

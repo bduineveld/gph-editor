@@ -595,9 +595,16 @@ function stageItems(section, f, r, stateNo = 0) {
   const fontH = (res) => (res && res.kind === "font" && res.height) ? Math.max(8, Math.round(res.height * (res.scale || 1000) / 1000)) : 20;
   const colorOf = (res) => (res && res.kind === "color" ? "#" + res.hex.slice(0, 6) : "#ffffff");
   const textOf = (res) => (res && res.kind === "text_index" && res.texts.find((t) => t != null)) || null;
-  const text = (x, y, w, res, color, font, label) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: textOf(res) || label, color: colorOf(color),
+  const text = (x, y, w, res, color, font, label, align) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: textOf(res) || label, color: colorOf(color),
     hex: color && color.kind === "color" ? color.hex : "ffffffff", font: font && font.kind === "font" ? font.index : null,
-    interline: f.interline || 0, align: f.text_hor_alignment != null ? f.text_hor_alignment : (f.alignment || 0), placeholder: !textOf(res), label });
+    interline: f.interline || 0, align: align != null ? align : (f.text_hor_alignment != null ? f.text_hor_alignment : 0), placeholder: !textOf(res), label });
+  // buttons and menus: text_dx is an anchor inside the image. alignment 0 = centred on it (factory
+  // files have text_dx = image width / 2), 1 = starts there (text_dx 7..10, 45 after a check box), 2 = ends there (assumed)
+  const anchored = (ax, ay, w, res, color, font, label, align) => {
+    const bw = w || 200;
+    const left = align === 0 ? ax - Math.round(bw / 2) : align === 2 ? ax - bw : ax;
+    text(left, ay, bw, res, color, font, label, align === 0 ? 1 : align === 2 ? 2 : 0);
+  };
   const x = f.x || 0, y = f.y || 0;
   switch (kind) {
     case "BKGD": case "FXPI": img(r.image, x, y); break;
@@ -613,7 +620,7 @@ function stageItems(section, f, r, stateNo = 0) {
       const im = img(first(r.images), x, y, `state ${stateNo} image`);
       if (kind === "DBTN") img(r.arrow_image, x + (f.arrow_dx || 0), y + (f.arrow_dy || 0), "arrow");
       const col = first(r.text_colors) || first(r.not_selected_text_colors);
-      text(x + (f.text_dx || 0), y + (f.text_dy || 0), f.text_width || (im ? im.width - (f.text_dx || 0) : 0), r.text_index || first(r.text_indexes), col, r.font, kind.toLowerCase() + " text");
+      anchored(x + (f.text_dx || 0), y + (f.text_dy || 0), f.text_width || (im ? im.width : 0), r.text_index || first(r.text_indexes), col, r.font, kind.toLowerCase() + " text", f.alignment || 0);
       if (kind === "EDTX") img(first(r.backgrounds), x, y, "background");
       break;
     }
@@ -622,7 +629,7 @@ function stageItems(section, f, r, stateNo = 0) {
       img(r.cursor_image, x, y, "cursor image");
       const fh = fontH(r.font), col = first(r.text_colors);
       const texts = (r.texts || []).length ? r.texts : [null];
-      texts.forEach((t, n) => text(x + (f.text_dx || 0), y + (f.text_dy || 0) + n * Math.round(fh * 1.4), f.text_width || 300, t, col, r.font, `item ${n}`));
+      texts.forEach((t, n) => anchored(x + (f.text_dx || 0), y + (f.text_dy || 0) + n * Math.round(fh * 1.4), f.text_width || 300, t, col, r.font, `item ${n}`, f.text_alignment || 0));
       break;
     }
     case "LIST":
