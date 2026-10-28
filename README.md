@@ -27,7 +27,10 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
 * **Textures**: PNG/GIF images encode to BMP8.3/BMP8.4 (palettised, exact up to 256 colours)
   and DXT1/DXT1A/DXT3/DXT5 (pure Python S3TC compressor); `gph set-image` replaces an image
   definition including animations, `gph set-texture` a single texture.
-* Not yet: a GUI, and nothing has been tried on a real unit yet.
+* **Web UI**: `gph serve` opens a local editor in the browser: browse every section, edit
+  texts and colours, replace images and textures (with a quality preview), change any
+  widget field as JSON, undo, and save packages.
+* Not yet tried on a real unit.
 
 ## Install
 
@@ -53,7 +56,24 @@ A *workspace* is the set of related files (common, font, one language, one theme
 `-w` at the files or at the `Graphics` folder and use `--language DU --theme HA00` when it
 contains several.
 
-### Editing
+### Web UI
+
+```bash
+gph serve Graphics/            # opens http://127.0.0.1:8765/ with every GPH file below Graphics/
+```
+
+The page lists the open files on the left (open more with *Open…* or by dropping files on
+the page).  Texts, colours, images, textures, fonts and the widget sections each have their
+own view; the panel on the right edits the selected item.  Image and texture replacement
+takes PNG/GIF files (several files or an animated GIF become an animation), shows a quality
+preview for the chosen format, and keeps the display size and texture format like
+`gph set-image` does.  Every edit stays in memory (with undo) until *Save…* writes a
+`.gph.bz2` with its `.inf` to a folder of your choice; the original file is never
+overwritten.  Opening the whole `Graphics` folder lets the editor resolve links, so a menu
+shows its texts, colours and images.  The server binds to localhost only and can read and
+write files on this machine, like any local tool; `--port` and `--host` change the address.
+
+### Editing from the command line
 
 ```bash
 gph set-text  DU/GEN_DU.gph.bz2 1 "Film" 0x2A 'Regel een\nregel twee' -o out/DU/

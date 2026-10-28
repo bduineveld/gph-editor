@@ -1,7 +1,7 @@
 """Command line interface.
 
 Inspect: ``gph info|dump|check|roundtrip|export``.  Edit: ``gph set-text|set-color|set|import|save``.
-Side-car: ``gph inf verify|write``.
+Side-car: ``gph inf verify|write``.  Web UI: ``gph serve``.
 """
 
 from __future__ import annotations
@@ -404,6 +404,12 @@ def cmd_preview(args):
 
 
 # ---------------------------------------------------------------------------
+def cmd_serve(args):
+    from .server import serve
+    serve(args.paths, host=args.host, port=args.port, open_browser=not args.no_browser)
+
+
+# ---------------------------------------------------------------------------
 def cmd_inf(args):
     from .inf import InfFile, write_inf_for
     rc = 0
@@ -529,6 +535,14 @@ def main(argv=None):
     s.add_argument("file")
     out_args(s)
     s.set_defaults(fn=cmd_save)
+
+    s = sub.add_parser("serve", help="open the web UI (local editor in the browser)")
+    s.add_argument("paths", nargs="*", help="GPH files or folders to open at start")
+    s.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT") or 8765),
+                   help="TCP port (default: $PORT or 8765)")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--no-browser", action="store_true", help="do not open a browser window")
+    s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("inf", help="verify or (re)write the .inf side-car of data files")
     s.add_argument("action", choices=["verify", "write"])

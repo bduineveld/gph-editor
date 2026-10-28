@@ -11,6 +11,7 @@ Layering:
 * :mod:`gph.fonts`     - decodes ``BFNT2000`` bitmap fonts.
 * :mod:`gph.workspace` - a set of related files (common, language, font, theme) with link resolution.
 * :mod:`gph.inf`       - the ``.inf`` side-car files.
+* :mod:`gph.server`    - the local web UI (``gph serve``): JSON API + static front end in ``gph/web``.
 """
 
 from .container import GphFile, Section
