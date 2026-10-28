@@ -24,7 +24,10 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
 * **Writing**: every item type is re-encoded from its fields (byte identical to the factory
   files for all 42 000 items), so texts, colours and any widget field can be changed and the
   result saved as a valid `.gph.bz2` with a matching `.inf`.
-* Not yet: texture encoding (replacing images with your own PNGs), a GUI.
+* **Textures**: PNG/GIF images encode to BMP8.3/BMP8.4 (palettised, exact up to 256 colours)
+  and DXT1/DXT1A/DXT3/DXT5 (pure Python S3TC compressor); `gph set-image` replaces an image
+  definition including animations, `gph set-texture` a single texture.
+* Not yet: a GUI, and nothing has been tried on a real unit yet.
 
 ## Install
 
@@ -58,8 +61,18 @@ gph set-color HARM00/GEN_HA00.gph.bz2 1 '#ffcc00' 3 '#ff0000' -o out/HARM00/
 gph set GEN_common.gph.bz2 -s FBTN2006 -i 0 x=100 y=200 font=FNT:2 'images=["LRG:1","LRG:2"]' -o out/Common/
 gph export DU/GEN_DU.gph.bz2 -o exp            # edit exp/GEN_DU/TEXT2006.txt or any <SECTION>.json ...
 gph import DU/GEN_DU.gph.bz2 exp/GEN_DU -o out/DU/   # ... and apply it
+gph set-image   HARM00/GEN_HA00.gph.bz2 0x1A logo.png -o out/HARM00/          # replace an image (IMAG2000)
+gph set-image   HARM00/GEN_HA00.gph.bz2 5 anim.gif -f DXT5 -o out/HARM00/     # animation: GIF or several PNGs
+gph set-texture HARM00/LRG_HA00.gph.bz2 0x2C bg.png -f BMP8.4 -o out/HARM00/  # replace one texture (TXUR2008)
+gph preview photo.png -f DXT1 -o check.png     # see what a format does to an image (prints PSNR)
 gph save GEN_HA00.gph -o out/HARM00/           # .gph -> .gph.bz2 + .inf
 ```
+
+Use `gph dump FILE -s IMAG2000 -w Graphics/` or the PNGs from `gph export` to find the image
+index to replace.  `set-image` keeps the texture format of the image it replaces unless
+`-f` says otherwise, pads S3TC textures to multiples of 4, keeps the display size when the
+unit stretches the image (`--display WxH` overrides), and allocates new texture slots when
+the old ones are shared with other images (`--share` overwrites anyway).
 
 `-o` takes a file or a folder; with a folder the file gets the name the unit expects
 (`GEN_DU.gph.bz2`).  Output ending in `.bz2` is compressed and gets its `.inf` side-car

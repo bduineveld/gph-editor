@@ -34,6 +34,7 @@ __all__ = [
     "get_text", "set_text", "set_color", "get_color",
     "escape_text", "unescape_text", "export_texts", "import_texts", "import_json", "import_dir",
     "parse_value", "write_package",
+    "load_frames", "texture_users", "set_texture", "set_image",
 ]
 
 
@@ -292,3 +293,112 @@ def write_package(f: GphFile, out_path: str | os.PathLike, version: str | None =
     else:
         write_inf_for(out_path, version=version)
     return out_path + ".inf"
+
+
+# ---------------------------------------------------------------------------
+# textures and images (TXUR2008 / IMAG2000 in GEN_HAxx / LRG_HAxx)
+def load_frames(paths: Iterable[str]) -> list:
+    """Open image files; animated GIF/APNG/WebP files contribute all their frames."""
+    from PIL import Image, ImageSequence
+    frames = []
+    for p in paths:
+        with Image.open(p) as im:
+            if getattr(im, "n_frames", 1) > 1:
+                frames += [fr.convert("RGBA") for fr in ImageSequence.Iterator(im)]
+            else:
+                frames.append(im.convert("RGBA"))
+    return frames
+
+
+def texture_users(f: GphFile) -> dict[int, list[int]]:
+    """texture slot -> IMAG2000 items whose pictures use it."""
+    users: dict[int, list[int]] = {}
+    sec = f.section("IMAG2000")
+    for idx, raw in (sec.used() if sec else []):
+        for pic in decode_item(sec.name, idx, raw).fields.get("pictures") or []:
+            if pic:
+                users.setdefault(pic["texture"], []).append(idx)
+    return users
+
+
+def set_texture(f: GphFile, index: int, image, fmt=None, flags: int | None = None,
+                fix_pictures: bool = True) -> dict:
+    """Replace texture ``index`` with ``image`` (Pillow image or path).
+
+    ``fmt`` is ``"BMP8.4"``, ``"DXT5"`` ... (default: the slot's current format, else BMP8.4);
+    ``flags`` defaults to the slot's current flags.  With ``fix_pictures`` every IMAG2000
+    picture record that uses the slot is updated to the image size.  Returns the new fields.
+    """
+    from PIL import Image
+    from .textures import DEFAULT_FLAGS, encode_texture
+    if isinstance(image, (str, os.PathLike)):
+        image = Image.open(image).convert("RGBA")
+    old = get_fields(f, "TXUR2008", index)
+    if fmt is None:
+        fmt = old["internal_format"] if old else 0x8B96
+    if flags is None:
+        flags = old["flags"] if old else DEFAULT_FLAGS
+    fields = encode_texture(image, fmt, flags)
+    set_item(f, "TXUR2008", index, encode_item("TXUR2008", fields))
+    if fix_pictures:
+        for imag_index in texture_users(f).get(index, []):
+            pics = get_fields(f, "IMAG2000", imag_index)["pictures"]
+            for pic in pics:
+                if pic and pic["texture"] == index:
+                    pic["width_minus_1"] = image.width - 1
+                    pic["height_minus_1"] = image.height - 1
+            update_item(f, "IMAG2000", imag_index, {"pictures": pics})
+    return fields
+
+
+def set_image(f: GphFile, index: int, frames, fmt=None, display: tuple[int, int] | None = None,
+              share: bool = False, flags: int | None = None) -> dict:
+    """Replace the picture(s) of IMAG2000 item ``index`` with ``frames`` (Pillow images or paths).
+
+    Each frame goes into the texture slot the corresponding picture used, unless that slot is
+    also used by another image (then a new slot is appended, so the other image keeps its
+    look; ``share=True`` overwrites anyway).  Extra frames get new slots; surplus pictures are
+    dropped.  ``fmt`` defaults to the format of the texture being replaced.  The display size
+    (IMAG width/height) follows the frame size when it equalled the old picture size, else it
+    is kept (the unit stretches the texture to it); ``display`` overrides.
+    Returns ``{"slots": [...], "new_slots": [...], "display": (w, h)}``.
+    """
+    from PIL import Image
+    if isinstance(frames, (str, os.PathLike, Image.Image)):
+        frames = [frames]
+    frames = [Image.open(x).convert("RGBA") if isinstance(x, (str, os.PathLike)) else x.convert("RGBA") for x in frames]
+    if not frames:
+        raise ValueError("no frames")
+    imag = get_fields(f, "IMAG2000", index) or {"flag": 0, "time": 0, "width": frames[0].width,
+                                                 "height": frames[0].height, "h_stretch": 0, "v_stretch": 0,
+                                                 "pictures": []}
+    old_pics = [p for p in (imag.get("pictures") or [])]
+    users = texture_users(f)
+    tex = get_section(f, "TXUR2008", create=True)
+    slots, new_slots, pics = [], [], []
+    for i, frame in enumerate(frames):
+        old = old_pics[i] if i < len(old_pics) else None
+        slot = old["texture"] if old else None
+        if slot is not None and not share and any(u != index for u in users.get(slot, [])):
+            slot = None
+        if slot is None:
+            slot = len(tex.items)
+            tex.items.append(None)
+            new_slots.append(slot)
+        old_tex = get_fields(f, "TXUR2008", old["texture"]) if old else None
+        use_fmt = fmt if fmt is not None else (old_tex["internal_format"] if old_tex else 0x8B96)
+        use_flags = flags if flags is not None else (old_tex["flags"] if old_tex else None)
+        set_texture(f, slot, frame, use_fmt, use_flags, fix_pictures=False)
+        slots.append(slot)
+        pics.append({"width_minus_1": frame.width - 1, "height_minus_1": frame.height - 1, "texture": slot})
+    if display is None:
+        first = old_pics[0] if old_pics and old_pics[0] else None
+        if first is None or (imag["width"], imag["height"]) == (first["width_minus_1"] + 1, first["height_minus_1"] + 1):
+            display = frames[0].size
+        else:
+            display = (imag["width"], imag["height"])
+    changes = {"pictures": pics, "width": display[0], "height": display[1]}
+    for k in ("flag", "time", "h_stretch", "v_stretch"):
+        changes.setdefault(k, imag.get(k, 0))
+    update_item(f, "IMAG2000", index, changes)
+    return {"slots": slots, "new_slots": new_slots, "display": tuple(display)}

@@ -14,8 +14,9 @@ import sys
 from . import fonts, textures
 from .container import GphFile, iter_gph_files
 from .decode import Link, decode_item
-from .edit import (default_filename, export_texts, import_dir, import_json, import_texts, parse_value,
-                   set_color, set_text, unescape_text, update_item, write_package)
+from .edit import (default_filename, export_texts, import_dir, import_json, import_texts, load_frames, parse_value,
+                   set_color, set_image, set_text, set_texture, texture_users, unescape_text, update_item,
+                   write_package)
 from .encode import EncodeError, encode_item
 from .schema import GL_ENUMS, IMAG_FLAGS, IMAG_STRETCH, SECTION_DESCRIPTIONS, TXCO_DESCRIPTIONS
 from .workspace import Workspace
@@ -303,6 +304,11 @@ def cmd_set_color(args):
     _write(args, f)
 
 
+def get_fields_cli(f, section, index):
+    from .edit import get_fields
+    return get_fields(f, section, index)
+
+
 def cmd_set(args):
     f = GphFile.load(args.file)
     sec = f.section(args.section)
@@ -346,6 +352,55 @@ def cmd_import(args):
 def cmd_save(args):
     f = GphFile.load(args.file)
     _write(args, f)
+
+
+def _size(text):
+    w, h = text.lower().split("x")
+    return int(w), int(h)
+
+
+def cmd_set_texture(args):
+    f = GphFile.load(args.file)
+    if f.section("TXUR2008") is None:
+        print(f"{args.file} ({f.name!r}) has no TXUR2008 section; textures live in GEN_HAxx / LRG_HAxx files")
+        return 1
+    i = _index(args.index)
+    frames = load_frames([args.image])
+    fl = set_texture(f, i, frames[0], args.format, args.flags, fix_pictures=not args.keep_pictures)
+    users = texture_users(f).get(i, [])
+    print(f"TXUR2008[{i:04X}] = {textures.texture_type_name(fl['internal_format'])} {fl['width']}x{fl['height']} "
+          f"({fl['size']} bytes); used by IMAG {', '.join(f'{u:04X}' for u in users) or '-'}")
+    _write(args, f)
+
+
+def cmd_set_image(args):
+    f = GphFile.load(args.file)
+    if f.section("IMAG2000") is None:
+        print(f"{args.file} ({f.name!r}) has no IMAG2000 section; images live in GEN_HAxx / LRG_HAxx files")
+        return 1
+    i = _index(args.index)
+    frames = load_frames(args.images)
+    info = set_image(f, i, frames, args.format, _size(args.display) if args.display else None, args.share, args.flags)
+    fl = get_fields_cli(f, "IMAG2000", i)
+    print(f"IMAG2000[{i:04X}]: {len(frames)} frame(s) -> TXUR {', '.join(f'{s:04X}' for s in info['slots'])}"
+          f"{' (new: ' + ', '.join(f'{s:04X}' for s in info['new_slots']) + ')' if info['new_slots'] else ''}; "
+          f"picture {frames[0].width}x{frames[0].height}, display {info['display'][0]}x{info['display'][1]}, "
+          f"time={fl['time']} flag={fl['flag']}")
+    _write(args, f)
+
+
+def cmd_preview(args):
+    """Encode an image file and write the decoded result, to judge the quality of a format."""
+    import math
+    frames = load_frames([args.image])
+    src = frames[0]
+    fl = textures.encode_texture(src, args.format)
+    back = textures.texture_image(fl).crop((0, 0, src.width, src.height))
+    a, b = src.tobytes(), back.tobytes()
+    se = sum((x - y) ** 2 for x, y in zip(a, b))
+    psnr = 99.0 if se == 0 else 10 * math.log10(255 ** 2 / (se / len(a)))
+    back.save(args.out)
+    print(f"{args.format}: {fl['width']}x{fl['height']} {fl['size']} bytes, PSNR {psnr:.1f} dB -> {args.out}")
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +495,35 @@ def main(argv=None):
     s.add_argument("sources", nargs="+")
     out_args(s)
     s.set_defaults(fn=cmd_import)
+
+    fmt_help = "texture format: BMP8.4 (palette+alpha), BMP8.3, DXT1, DXT1A, DXT3, DXT5 (default: keep the slot's)"
+
+    s = sub.add_parser("set-texture", help="replace one texture (TXUR2008) with an image file")
+    s.add_argument("file")
+    s.add_argument("index")
+    s.add_argument("image")
+    s.add_argument("-f", "--format", help=fmt_help)
+    s.add_argument("--flags", type=lambda x: int(x, 0), help="header flags (default: keep)")
+    s.add_argument("--keep-pictures", action="store_true", help="do not update IMAG picture sizes that use this slot")
+    out_args(s)
+    s.set_defaults(fn=cmd_set_texture)
+
+    s = sub.add_parser("set-image", help="replace an image definition (IMAG2000) with image file(s); several files or an animated GIF = animation")
+    s.add_argument("file")
+    s.add_argument("index")
+    s.add_argument("images", nargs="+")
+    s.add_argument("-f", "--format", help=fmt_help)
+    s.add_argument("--display", help="display size WxH (default: follows the image when it did before, else kept)")
+    s.add_argument("--share", action="store_true", help="overwrite textures even when other images use them")
+    s.add_argument("--flags", type=lambda x: int(x, 0))
+    out_args(s)
+    s.set_defaults(fn=cmd_set_image)
+
+    s = sub.add_parser("preview", help="encode an image to a texture format and save the decoded result (quality check)")
+    s.add_argument("image")
+    s.add_argument("-f", "--format", default="DXT5", help=fmt_help)
+    s.add_argument("-o", "--out", required=True, help="PNG to write")
+    s.set_defaults(fn=cmd_preview)
 
     s = sub.add_parser("save", help="re-save (e.g. .gph -> .gph.bz2 with .inf)")
     s.add_argument("file")

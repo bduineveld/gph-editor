@@ -234,7 +234,7 @@ u32 type          0x1401 GL_UNSIGNED_BYTE
 u32 0
 u32 size          payload bytes
 u16 width, u16 height
-u32 flags         0x01030000 in every factory file (0x01000000 in files written by the PHP tool)
+u32 flags         0x01030000 or 0x01000000 (both occur in factory files; meaning unknown)
 ptr→ payload      always 40
 ```
 
@@ -248,9 +248,18 @@ ptr→ payload      always 40
 | `0x83F3` | `..._RGBA_S3TC_DXT5` | DXT5 | 16 B per block, interpolated alpha |
 
 S3TC colours are little-endian RGB565 as in every DDS file.  Width and height are
-multiples of 4 for compressed textures (GPH_EDITOR rounds up).  GPH_EDITOR also knows a
-"BMP 32bit" type (raw RGBA, 4·w·h) that does not occur in our samples; it would be
-`internal_format = 0x1908`.
+multiples of 4 for compressed textures (GPH_EDITOR rounds up); the real picture size is
+kept in the `IMAG2000` picture record (`width_minus_1`/`height_minus_1`, e.g. 105×31 inside
+a 108×32 texture).  `IMAG2000.width/height` is the *display* size: the unit stretches the
+texture to it (a 32×32 texture shown as a 566×42 bar), so it often differs from the texture
+size.  One texture may be used by several images (119 of 1535 in the HARM00 set).
+GPH_EDITOR also knows a "BMP 32bit" type (raw RGBA, 4·w·h) that does not occur in our
+samples; it would be `internal_format = 0x1908`.
+
+Encoding: `gph.textures.encode_texture` writes BMP8.3/BMP8.4 exactly when the image has at
+most 256 colours (median cut / octree quantisation otherwise) and compresses S3TC with the
+pure Python encoder in `gph.s3tc` (principal-axis range fit plus least-squares refinement,
+both DXT5 alpha modes).  Re-encoding the decoded factory textures gives 42–89 dB PSNR.
 
 ## 7. `.inf` side-car
 
