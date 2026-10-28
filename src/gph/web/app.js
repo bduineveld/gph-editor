@@ -60,7 +60,7 @@ const fileById = (id) => state.files.find((f) => f.id === id);
 
 function updateFile(info) {
   const i = state.files.findIndex((f) => f.id === info.id);
-  if (i >= 0) state.files[i] = info; else state.files.push(info);
+  if (i >= 0) state.files[i] = info; else { state.files.push(info); loadSettings(); }
   state.rev[info.id] = (state.rev[info.id] || 0) + 1;
   renderSidebar();
 }
@@ -160,6 +160,7 @@ async function closeFile(fid) {
   state.files = state.files.filter((x) => x.id !== fid);
   if (state.route.f === fid) go(null);
   renderSidebar();
+  loadSettings();
 }
 
 // ---------------------------------------------------------------------------
@@ -513,13 +514,160 @@ function detailTexture(d, f, i, item) {
 }
 
 function detailOther(d, f, s, i, item) {
-  if (Object.keys(item.described).length) {
-    const dl = h("dl", { class: "kv" });
-    for (const [k, v] of Object.entries(item.described)) dl.append(h("dt", {}, k), h("dd", {}, Array.isArray(v) ? v.join(", ") : v));
-    d.append(h("h3", {}, "Links"), dl);
-  }
+  const fl = item.fields, r = item.resolved || {};
+  if (STAGED.has(s.slice(0, 4))) d.append(stageBlock(s, fl, r));
+  const geo = ["level", "x", "y", "text_width", "text_dx", "text_dy", "visible_width", "visible_height", "width", "height", "style", "alignment", "text_hor_alignment", "text_ver_alignment", "interline", "time", "blinking_period"]
+    .filter((k) => fl[k] != null).map((k) => `${k}=${fl[k]}`).join("  ");
+  if (geo) d.append(h("p", { class: "mono muted", style: "font-size:12px" }, geo));
+  if (Object.keys(r).length) d.append(h("h3", {}, "References"), resolvedBlock(r));
   if (item.problems.length) d.append(h("p", { class: "problem" }, item.problems.join("; ")));
-  d.append(rawJson(f, s, i, item, true));
+  d.append(rawJson(f, s, i, item, false));
+}
+
+// ---------------------------------------------------------------------------
+// resolved references (links into the theme, font, common and language files)
+function refView(res) {
+  if (!res) return h("span", { class: "muted" }, "–");
+  const jump = (file, sec, idx) => () => go(file, sec, idx);
+  if (res.kind === "missing") return h("span", { class: "muted" }, `${res.module}:${res.index} (${res.what}: file not open)`);
+  if (res.kind === "image") {
+    return h("span", { class: "ref ref-img", onclick: jump(res.file, "IMAG2000", res.index), title: "open image" },
+      h("span", { class: "thumb mini" }, h("img", { src: res.url + "&v=" + (state.rev[res.file] || 0), alt: "" })),
+      h("span", {}, h("b", {}, `${res.module} ${hex4(res.index)}`), ` ${res.width}×${res.height}`, res.frames > 1 ? h("span", { class: "badge" }, `×${res.frames}`) : null));
+  }
+  if (res.kind === "color") {
+    return h("span", { class: "ref", onclick: jump(res.file, "TXCO2000", res.index), title: "open colour" },
+      h("span", { class: "swatch inline" }, h("span", { style: `background:#${res.hex}` })),
+      h("b", {}, `${res.module} ${hex4(res.index)}`), ` #${res.hex}`, res.description ? h("small", {}, ` ${res.description}`) : null);
+  }
+  if (res.kind === "font") {
+    return h("span", { class: "ref", onclick: jump(res.file, "FONT2007", res.index), title: "open font table" },
+      h("b", {}, `${res.module} ${hex4(res.index)}`), ` scale ${res.scale}`, res.height ? `, ${res.height} px` : "", res.style ? `, style ${res.style}` : "");
+  }
+  if (res.kind === "text_index") {
+    const el = h("span", { class: "ref" }, h("b", { onclick: jump(res.file, "TXIN2000", res.index), title: "open text index" }, `${res.module} ${hex4(res.index)}`), " ");
+    res.slots.forEach((slot, n) => {
+      if (n) el.append(h("span", { class: "muted" }, " / "));
+      const t = res.texts[n];
+      el.append(h("span", { class: "text-ref", title: `language text ${hex4(slot)}`, onclick: res.language_file != null ? jump(res.language_file, "TEXT2006", slot) : null },
+        t == null ? h("span", { class: "muted" }, `<${hex4(slot)}>`) : showText(t)));
+    });
+    if (res.unit_dependance) el.append(h("small", { class: "muted" }, " (unit dependent)"));
+    return el;
+  }
+  if (res.kind === "text") {
+    return h("span", { class: "ref", onclick: res.file != null ? jump(res.file, "TEXT2006", res.index) : null },
+      h("b", {}, hex4(res.index)), " ", res.text == null ? h("span", { class: "muted" }, "(not in this language file)") : showText(res.text));
+  }
+  return h("span", {}, JSON.stringify(res));
+}
+
+function resolvedBlock(resolved) {
+  const dl = h("dl", { class: "kv refs" });
+  for (const [k, v] of Object.entries(resolved)) {
+    dl.append(h("dt", {}, k));
+    if (Array.isArray(v)) {
+      const ul = h("ol", { class: "reflist", start: 0 });
+      v.forEach((x) => ul.append(h("li", {}, refView(x))));
+      dl.append(h("dd", {}, v.length ? ul : h("span", { class: "muted" }, "empty")));
+    } else dl.append(h("dd", {}, refView(v)));
+  }
+  return dl;
+}
+
+// ---------------------------------------------------------------------------
+// stage: the widget drawn at its position on the 800x480 screen
+const STAGED = new Set(["BKGD", "FXPI", "VRPI", "DYPI", "ITXT", "DTXT", "FXTX", "FBTN", "CBTN", "DBTN", "DCBT", "ICBT", "MCTX", "EDTX", "MENU", "IMEN", "LIST", "EDTB", "VWTX", "FBAR", "SEBR", "CRZO", "ACLK"]);
+
+function stageItems(section, f, r) {
+  const kind = section.slice(0, 4);
+  const items = [];
+  const first = (v) => (Array.isArray(v) ? v.find(Boolean) : v) || null;
+  const img = (res, x, y, label) => { if (res && res.kind === "image") items.push({ type: "img", x, y, w: res.width, h: res.height, url: res.url, label: label || `${res.module} ${hex4(res.index)}` }); return res && res.kind === "image" ? res : null; };
+  const box = (x, y, w, h, label) => items.push({ type: "box", x, y, w: w || 48, h: h || 24, label });
+  const fontH = (res) => (res && res.kind === "font" && res.height) || 20;
+  const colorOf = (res) => (res && res.kind === "color" ? "#" + res.hex.slice(0, 6) : "#ffffff");
+  const textOf = (res) => (res && res.kind === "text_index" && res.texts.find((t) => t != null)) || null;
+  const text = (x, y, w, res, color, font, label) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: textOf(res) || label, color: colorOf(color), placeholder: !textOf(res), label });
+  const x = f.x || 0, y = f.y || 0;
+  switch (kind) {
+    case "BKGD": case "FXPI": img(r.image, x, y); break;
+    case "VRPI": box(x, y, 48, 48, "variable picture"); break;
+    case "DYPI": box(0, 0, f.width, f.height, "dynamic picture"); img(r.image, 0, 0); break;
+    case "ITXT": case "DTXT": case "FXTX":
+      if (f.has_background || r.background) img(r.background, x + (f.bg_h_offset || 0), y + (f.bg_v_offset || 0), "background (position approximate)");
+      text(x, y, f.text_width, r.text_index, r.text_color, r.font, kind === "ITXT" ? "indexed text" : kind === "DTXT" ? "dynamic text" : "fixed text");
+      break;
+    case "FBTN": case "CBTN": case "DBTN": case "DCBT": case "ICBT": case "MCTX": case "EDTX": {
+      const im = img(first(r.images), x, y, "state 0 image");
+      if (kind === "DBTN") img(r.arrow_image, x + (f.arrow_dx || 0), y + (f.arrow_dy || 0), "arrow");
+      const col = first(r.text_colors) || first(r.not_selected_text_colors);
+      text(x + (f.text_dx || 0), y + (f.text_dy || 0), f.text_width || (im ? im.width - (f.text_dx || 0) : 0), r.text_index || first(r.text_indexes), col, r.font, kind.toLowerCase() + " text");
+      if (kind === "EDTX") img(first(r.backgrounds), x, y, "background");
+      break;
+    }
+    case "MENU": case "IMEN": {
+      img(r.image, x, y, "menu image");
+      img(r.cursor_image, x, y, "cursor image");
+      const fh = fontH(r.font), col = first(r.text_colors);
+      const texts = (r.texts || []).length ? r.texts : [null];
+      texts.forEach((t, n) => text(x + (f.text_dx || 0), y + (f.text_dy || 0) + n * Math.round(fh * 1.4), f.text_width || 300, t, col, r.font, `item ${n}`));
+      break;
+    }
+    case "LIST":
+      img(r.background, x, y, "background");
+      box(x + (f.left_margin || 0), y + (f.top_margin || 0), f.visible_width, f.visible_height, "visible area");
+      img(r.scrollbar_bg, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar background");
+      img(r.scrollbar, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar");
+      img(r.cursor, x + (f.left_margin || 0), y + (f.top_margin || 0), "cursor");
+      break;
+    case "EDTB": {
+      const imgs = (r.images || []).filter(Boolean), col = r.not_selected_color;
+      (f.key_dx || []).forEach((dx, n) => {
+        const im = img(imgs[n] || imgs[0], x + dx, y + (f.key_dy || [])[n], `key ${n}`);
+        text(x + dx, y + (f.key_dy || [])[n], im ? im.width : 40, (r.texts || [])[n], col, r.font, `key ${n}`);
+      });
+      break;
+    }
+    case "VWTX": img(first(r.backgrounds), x, y, "background"); box(x + (f.left_margin || 0), y + (f.top_margin || 0), f.visible_width, f.visible_height, "visible area"); img(first(r.scrollbar_bgs), x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar background"); break;
+    case "FBAR": img(r.background, x, y, "background"); img(r.foreground, x, y, "foreground"); img(r.cursor_bg_image, x, y, "cursor background"); img(r.cursor_pointer_image, x, y, "cursor"); break;
+    case "SEBR": img(first(r.backgrounds), x, y, "background"); img(first(r.foregrounds), x, y, "foreground"); img(first(r.cursor_backgrounds), x, y, "cursor background"); img(first(r.cursor_images), x, y, "cursor"); break;
+    case "CRZO": img(r.bg_image, x, y, "background"); box(x, y, f.zoom_width, f.zoom_height, "zoom window"); break;
+    case "ACLK": img(r.background_image, x, y, "background"); img(r.center_image, x, y, "centre"); break;
+    default:
+      for (const [k, v] of Object.entries(r)) { const res = first(v); if (res && res.kind === "image") img(res, x, y, k); }
+  }
+  return items;
+}
+
+function stageBlock(section, fields, resolved) {
+  const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
+  const bg = state.settings && state.settings.background;
+  const wrap = h("div", { class: "stage-wrap" });
+  const stage = h("div", { class: "stage", style: `width:${scr.width}px;height:${scr.height}px` });
+  const showBg = h("input", { type: "checkbox", checked: state.stageBg !== false });
+  const items = stageItems(section, fields, resolved);
+  const draw = () => {
+    stage.innerHTML = "";
+    if (showBg.checked && bg && !(section.startsWith("BKGD") && fields.x === 0 && fields.y === 0 && resolved.image && resolved.image.index === bg.index)) {
+      stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + (state.rev[bg.file] || 0), alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
+    }
+    for (const it of items) {
+      const st = `left:${it.x}px;top:${it.y}px;width:${it.w}px;height:${it.h}px`;
+      if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + "&v=" + (state.rev[bg ? bg.file : 0] || 0), alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }));
+      else if (it.type === "text") stage.append(h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}`, style: `${st};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px` }, it.text));
+      else stage.append(h("div", { class: "stage-box", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }, h("span", {}, it.label)));
+    }
+  };
+  showBg.onchange = () => { state.stageBg = showBg.checked; draw(); };
+  draw();
+  wrap.append(stage);
+  const fit = () => { const sc = Math.min(1, (wrap.clientWidth || 340) / scr.width); stage.style.transform = `scale(${sc})`; wrap.style.height = Math.round(scr.height * sc) + "px"; };
+  requestAnimationFrame(fit);
+  window.addEventListener("resize", fit);
+  const big = h("button", { class: "small", onclick: () => { const clone = stage.cloneNode(true); clone.style.transform = ""; modal(h("div", {}, h("h2", {}, `${section} on screen (1:1)`), h("div", { class: "stage-wrap big" }, clone), h("div", { class: "modal-actions" }, h("button", { onclick: closeModal }, "Close")))); } }, "1:1");
+  return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
+    h("label", {}, h("span", {}, showBg, " screen background")), h("small", { class: "muted" }, `${scr.width}×${scr.height}, positions from the item; hover for details`), big), wrap);
 }
 
 function rawJson(f, s, i, item, open) {
@@ -613,6 +761,29 @@ function saveDialog(fid) {
 
 // ---------------------------------------------------------------------------
 // boot
+async function loadSettings() {
+  try { state.settings = await api("GET", "/api/settings"); } catch (e) { state.settings = null; }
+  renderSettings();
+}
+
+function renderSettings() {
+  const box = $("#settings");
+  box.innerHTML = "";
+  const st = state.settings;
+  if (!st || (!st.themes.length && !st.languages.length)) return;
+  const mk = (label, key, options, current) => {
+    const sel = h("select", { title: `${label} used to resolve links` }, ...options.map((o) => h("option", { value: o, selected: o === current }, o)));
+    sel.onchange = async () => {
+      state.settings = await act(() => api("POST", "/api/settings", { [key]: sel.value }));
+      renderSettings();
+      if (state.route.i != null) showDetail();
+    };
+    return h("label", { class: "setting" }, label + " ", sel);
+  };
+  if (st.themes.length) box.append(mk("Theme", "theme", st.themes, st.theme));
+  if (st.languages.length) box.append(mk("Language", "language", st.languages, st.language));
+}
+
 async function boot() {
   $("#btn-open").onclick = () => openDialog();
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
@@ -629,6 +800,7 @@ async function boot() {
   state.files = r.files;
   for (const f of state.files) state.rev[f.id] = 1;
   $("#status").textContent = `working folder ${r.cwd}`;
+  await loadSettings();
   renderSidebar();
   if (!location.hash && state.files.length) {
     const f = state.files[0];

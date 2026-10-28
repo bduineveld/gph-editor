@@ -24,6 +24,8 @@ API (all JSON unless noted)::
     GET  /api/files/ID/image/INDEX.png?frame=N[&display=1]
     GET  /api/files/ID/image/INDEX.gif           animation
     GET  /api/files/ID/font/INDEX.png            BFNT glyph sheet
+    GET  /api/settings                           theme/language in use, screen size, background
+    POST /api/settings    {"theme": "HA01", "language": "DE"}
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ from .schema import IMAG_FLAGS, IMAG_STRETCH, SECTION_DESCRIPTIONS, TXCO_DESCRIP
 from .workspace import Workspace
 
 MAX_UNDO = 50
+SCREEN = (800, 480)   # RT6 display; background 0 of GEN_common is an 800x480 image at (0, 0)
 
 #: how the UI groups sections
 SECTION_GROUP = {"TEXT": "texts", "TXCO": "colors", "IMAG": "images", "TXUR": "textures", "BFNT": "fonts"}
@@ -134,6 +137,8 @@ class Editor:
         self.files: dict[int, OpenFile] = {}
         self._next = 1
         self.lock = threading.RLock()
+        self.theme: str | None = None      # "HA00" ...; None = first theme found
+        self.language: str | None = None   # "DE" ...; None = first language found
 
     # -- files --------------------------------------------------------------
     def open_path(self, path: str) -> tuple[list[OpenFile], list[OpenFile]]:
@@ -185,11 +190,106 @@ class Editor:
         except KeyError:
             raise ApiError(f"no open file {fid}", 404) from None
 
+    def themes(self) -> list[str]:
+        return sorted({of.file.variant.strip() for of in self.files.values() if of.file.variant.startswith("HA")})
+
+    def languages(self) -> list[str]:
+        return sorted({of.file.variant.strip() for of in self.files.values()
+                       if of.file.module == "GEN " and not of.file.variant.startswith("HA") and of.file.variant.strip() != "COMM"})
+
     def workspace(self) -> Workspace:
+        """The open files as a workspace, honouring the chosen theme and language."""
         ws = Workspace()
+        theme = self.theme if self.theme in self.themes() else (self.themes() or [None])[0]
+        lang = self.language if self.language in self.languages() else (self.languages() or [None])[0]
         for of in self.files.values():
-            ws.add(of.file)
+            ws.add(of.file, language=lang, theme=theme)
         return ws
+
+    def settings(self) -> dict:
+        ws = self.workspace()
+        theme = ws.theme_gen.variant.strip() if ws.theme_gen else (ws.theme_lrg.variant.strip() if ws.theme_lrg else None)
+        lang = ws.language.variant.strip() if ws.language else None
+        d = {"theme": theme, "language": lang, "themes": self.themes(), "languages": self.languages(),
+             "screen": {"width": SCREEN[0], "height": SCREEN[1]}, "background": None}
+        bg = self._resolve_link(ws, "image", ws.common and self._first_background(ws.common))
+        if bg and bg.get("kind") == "image":
+            d["background"] = bg
+        return d
+
+    @staticmethod
+    def _first_background(common: GphFile) -> Link | None:
+        sec = common.section("BKGD2000")
+        if sec is None or not sec.items or sec.items[0] is None:
+            return None
+        return decode_item(sec.name, 0, sec.items[0]).fields.get("image")
+
+    def _of_for(self, f: GphFile | None) -> OpenFile | None:
+        return next((of for of in self.files.values() if of.file is f), None)
+
+    def _resolve_link(self, ws: Workspace, name: str, link, module: str | None = None) -> dict | None:
+        """Structured target of a link field: what it points at, where, and how to show it."""
+        if link is None:
+            return None
+        if isinstance(link, int):  # bare index with the module given by the caller
+            link = Link(module or "GEN ", link)
+        if link.is_null:
+            return None
+        n = name.lower()
+        mod = link.module.strip()
+        base = {"module": mod, "index": link.index}
+        if "color" in n:
+            c = ws.color(link)
+            of = self._of_for(ws.theme_gen)
+            if c is None or of is None:
+                return {**base, "kind": "missing", "what": "colour"}
+            return {**base, "kind": "color", "file": of.id, "hex": c["hex"], "description": TXCO_DESCRIPTIONS.get(link.index, "")}
+        if n == "font" or n.endswith("_font"):
+            it = ws.item(ws.font, "FONT2007", link.index)
+            of = self._of_for(ws.font)
+            if it is None or of is None:
+                return {**base, "kind": "missing", "what": "font"}
+            r = {**base, "kind": "font", "file": of.id, "scale": it.fields.get("font_scale"), "style": it.fields.get("font_style")}
+            blocks = [b for b in (it.fields.get("blocks") or []) if b]
+            if blocks:
+                bf = ws.item(ws.font, "BFNT2000", blocks[0]["bfnt"])
+                if bf is not None:
+                    r.update(bfnt=blocks[0]["bfnt"], height=bf.fields["char_height"], url=f"/api/files/{of.id}/font/{blocks[0]['bfnt']}.png")
+            return r
+        if "text" in n:
+            it = ws.item(ws.common, "TXIN2000", link.index)
+            of = self._of_for(ws.common)
+            if it is None or of is None:
+                return {**base, "kind": "missing", "what": "text index"}
+            slots = it.fields.get("texts") or []
+            lang_of = self._of_for(ws.language)
+            return {**base, "kind": "text_index", "file": of.id, "slots": slots, "style": it.fields.get("style"),
+                    "unit_dependance": it.fields.get("unit_dependance"), "language_file": lang_of.id if lang_of else None,
+                    "texts": [ws.text(i) for i in slots]}
+        im = ws.image(link)
+        f = ws.theme_lrg if mod.startswith("LRG") else ws.theme_gen
+        of = self._of_for(f)
+        if im is None or of is None:
+            return {**base, "kind": "missing", "what": "image"}
+        pics = [p for p in (im.fields.get("pictures") or []) if p]
+        return {**base, "kind": "image", "file": of.id, "width": im.fields["width"], "height": im.fields["height"],
+                "frames": len(pics), "flag": im.fields["flag"], "time": im.fields["time"],
+                "url": f"/api/files/{of.id}/image/{link.index}.png?display=1",
+                "gif": f"/api/files/{of.id}/image/{link.index}.gif" if len(pics) > 1 else None}
+
+    def resolve_fields(self, ws: Workspace, section: str, fields: dict) -> dict:
+        out = {}
+        for k, v in fields.items():
+            if isinstance(v, Link):
+                out[k] = self._resolve_link(ws, k, v)
+            elif isinstance(v, list) and v and all(x is None or isinstance(x, Link) for x in v):
+                out[k] = [self._resolve_link(ws, k[:-1] if k.endswith("s") else k, x) for x in v]
+            elif section.startswith("TXIN") and k == "texts" and isinstance(v, list):
+                lang_of = self._of_for(ws.language)
+                out[k] = [{"kind": "text", "index": i, "file": lang_of.id if lang_of else None, "text": ws.text(i)} for i in v]
+            elif section.startswith("SEBR") and k == "text_indexes" and isinstance(v, list):
+                out[k] = [self._resolve_link(ws, "text_index", i, fields.get("text_module")) for i in v]
+        return out
 
     def revert(self, of: OpenFile) -> None:
         if not of.path:
@@ -248,7 +348,8 @@ class Editor:
             elif isinstance(v, list) and v and all(x is None or isinstance(x, Link) for x in v):
                 described[k] = [ws.describe_link(k[:-1] if k.endswith("s") else k, x) for x in v]
         d = {"section": section, "index": index, "size": it.size, "reloc": it.reloc, "nreloc": it.nreloc,
-             "fields": it.to_json(), "described": described, "problems": it.problems + it.check_relocation()}
+             "fields": it.to_json(), "described": described, "resolved": self.resolve_fields(ws, section, it.fields),
+             "problems": it.problems + it.check_relocation()}
         if section.startswith("TXUR"):
             d["users"] = texture_users(of.file).get(index, [])
             d["format"] = textures.texture_type_name(it.fields["internal_format"])
@@ -517,6 +618,19 @@ class Handler(BaseHTTPRequestHandler):
         with self.editor.lock:
             self._json({"files": [of.info() for of in self.editor.files.values()], "cwd": os.getcwd()})
 
+    def r_settings(self, q):
+        with self.editor.lock:
+            self._json(self.editor.settings())
+
+    def r_settings_set(self, q):
+        d = self._body()
+        with self.editor.lock:
+            if "theme" in d:
+                self.editor.theme = d["theme"] or None
+            if "language" in d:
+                self.editor.language = d["language"] or None
+            self._json(self.editor.settings())
+
     def r_open(self, q):
         d = self._body()
         with self.editor.lock:
@@ -655,6 +769,8 @@ def _idx(s: str) -> int:
 
 ROUTES = [
     (re.compile(r"/api/files"), "GET", Handler.r_files),
+    (re.compile(r"/api/settings"), "GET", Handler.r_settings),
+    (re.compile(r"/api/settings"), "POST", Handler.r_settings_set),
     (re.compile(r"/api/open"), "POST", Handler.r_open),
     (re.compile(r"/api/upload"), "POST", Handler.r_upload),
     (re.compile(r"/api/browse"), "POST", Handler.r_browse),

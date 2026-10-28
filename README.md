@@ -69,8 +69,13 @@ takes PNG/GIF files (several files or an animated GIF become an animation), show
 preview for the chosen format, and keeps the display size and texture format like
 `gph set-image` does.  Every edit stays in memory (with undo) until *Save…* writes a
 `.gph.bz2` with its `.inf` to a folder of your choice; the original file is never
-overwritten.  Opening the whole `Graphics` folder lets the editor resolve links, so a menu
-shows its texts, colours and images.  The server binds to localhost only and can read and
+overwritten.  Open the whole `Graphics` folder and the widget sections of `GEN_common`
+come alive: every link is resolved through the chosen theme and language (selectors in
+the top bar), so a button shows its font, its text, its four state images and its text
+colours, each one a click away, and the item is drawn at its `x`/`y` on an 800×480 stage
+over the theme's background (menus with their items, the keyboard with its keys, lists
+with their visible area).  The stage is a reading aid, not an emulator: it places what
+the file says, it does not know which widgets the firmware shows together.  The server binds to localhost only and can read and
 write files on this machine, like any local tool; `--port` and `--host` change the address.
 
 ### Editing from the command line

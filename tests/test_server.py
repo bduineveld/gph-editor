@@ -233,6 +233,25 @@ def test_sample_files(tmp_path):
         assert d["described"]  # links resolved through the other open files
         fnt = next(f for f in files if f["name"] == "FNT COMM")
         assert c.call("GET", f"/api/files/{fnt['id']}/font/0.png", raw=True)[0] == 200
+        # theme / language selection and structured link resolution
+        st = c.ok("GET", "/api/settings")
+        assert st["theme"] == "HA00" and "HA01" in st["themes"] and st["language"] == "DE"
+        assert st["screen"] == {"width": 800, "height": 480}
+        assert st["background"]["kind"] == "image" and st["background"]["width"] > 0  # 800 on RT6 files
+        btn = c.ok("GET", f"/api/files/{common['id']}/item/FBTN2006/0")["resolved"]
+        assert btn["font"]["kind"] == "font" and btn["font"]["height"] > 0
+        assert btn["text_index"]["kind"] == "text_index" and btn["text_index"]["texts"] == ["OK"]
+        assert [x["kind"] for x in btn["images"]] == ["image"] * 4 and btn["images"][0]["url"].endswith("?display=1")
+        assert btn["text_colors"][0]["hex"] == "ffffffff"
+        ha00_file = btn["images"][0]["file"]
+        st = c.ok("POST", "/api/settings", {"theme": "HA01"})
+        assert st["theme"] == "HA01"
+        btn2 = c.ok("GET", f"/api/files/{common['id']}/item/FBTN2006/0")["resolved"]
+        assert btn2["images"][0]["file"] != ha00_file  # now resolved through the HA01 files
+        txin = c.ok("GET", f"/api/files/{common['id']}/item/TXIN2000/{btn['text_index']['index']}")["resolved"]
+        assert txin["texts"][0]["kind"] == "text" and txin["texts"][0]["text"] == "OK"
+        c.ok("POST", "/api/settings", {"theme": "nope"})  # unknown theme falls back to the first one
+        assert c.ok("GET", "/api/settings")["theme"] == "HA00"
     finally:
         srv.shutdown()
         srv.server_close()
