@@ -1,4 +1,8 @@
-"""Command line interface: ``gph info|dump|check|export|roundtrip``."""
+"""Command line interface.
+
+Inspect: ``gph info|dump|check|roundtrip|export``.  Edit: ``gph set-text|set-color|set|import|save``.
+Side-car: ``gph inf verify|write``.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,9 @@ import sys
 from . import fonts, textures
 from .container import GphFile, iter_gph_files
 from .decode import Link, decode_item
+from .edit import (default_filename, export_texts, import_dir, import_json, import_texts, parse_value,
+                   set_color, set_text, unescape_text, update_item, write_package)
+from .encode import EncodeError, encode_item
 from .schema import GL_ENUMS, IMAG_FLAGS, IMAG_STRETCH, SECTION_DESCRIPTIONS, TXCO_DESCRIPTIONS
 from .workspace import Workspace
 
@@ -99,6 +106,12 @@ def cmd_check(args):
                 total += 1
                 it = decode_item(sec.name, idx, raw)
                 probs = it.problems + it.check_relocation()
+                if not probs:
+                    try:
+                        if encode_item(sec.name, it.fields) != raw:
+                            probs.append(f"{sec.name}[{idx}]: re-encoding differs from the original bytes")
+                    except EncodeError as e:
+                        probs.append(f"{sec.name}[{idx}]: encode error: {e}")
                 if sec.name == "TXUR2008" and not it.problems:
                     exp = textures.expected_payload_size(it.fields["internal_format"], it.fields["width"], it.fields["height"])
                     if exp is not None and exp != it.fields["size"]:
@@ -158,7 +171,7 @@ def cmd_export(args):
                 with open(os.path.join(base, f"{sec.name}.json"), "w", encoding="utf-8") as fh:
                     json.dump(items, fh, indent=1, ensure_ascii=False)
             if sec.name == "TEXT2006":
-                _export_texts(sec, base)
+                _export_texts(f, base)
             elif sec.name == "TXUR2008" and not args.no_images:
                 _export_textures(sec, base)
             elif sec.name == "BFNT2000" and not args.no_images:
@@ -169,12 +182,11 @@ def cmd_export(args):
             json.dump(meta, fh, indent=1)
 
 
-def _export_texts(sec, base):
+def _export_texts(f, base):
+    """``XXXX<TAB>text`` per line; ``\\n`` is a line break, ``\\\\`` a backslash (see gph.edit)."""
     path = os.path.join(base, "TEXT2006.txt")
     with open(path, "w", encoding="utf-8") as fh:
-        for idx, raw in sec.used():
-            t = decode_item(sec.name, idx, raw).fields["text"].replace("\r", "|").replace("\n", "|")
-            fh.write(f"{idx:04X}\t{t}\n")
+        fh.write(export_texts(f))
     print(f"   texts -> {path}")
 
 
@@ -248,6 +260,95 @@ def _export_images(sec, f, base):
 
 
 # ---------------------------------------------------------------------------
+# editing
+def _index(text: str) -> int:
+    """Item index: decimal, ``0x1f`` or ``1Fh``; ``gph dump`` prints indexes in hex."""
+    t = text.strip()
+    if t.lower().endswith("h"):
+        return int(t[:-1], 16)
+    return int(t, 0)
+
+
+def _write(args, f: GphFile):
+    out = args.out
+    if os.path.isdir(out) or out.endswith(os.sep):
+        out = os.path.join(out, default_filename(f, compressed=not getattr(args, "raw", False)))
+    inf_path = write_package(f, out, version=getattr(args, "version", None),
+                             inf=False if getattr(args, "no_inf", False) else None)
+    print(f"written {out} ({os.path.getsize(out)} bytes)" + (f" + {os.path.basename(inf_path)}" if inf_path else ""))
+
+
+def cmd_set_text(args):
+    f = GphFile.load(args.file)
+    if f.section("TEXT2006") is None:
+        print(f"{args.file} ({f.name!r}) has no TEXT2006 section; texts live in GEN_<lang> files")
+        return 1
+    for idx, text in zip(args.index_text[::2], args.index_text[1::2]):
+        i = _index(idx)
+        text = unescape_text(text)
+        set_text(f, i, text)
+        print(f"TEXT2006[{i:04X}] = {text!r}")
+    _write(args, f)
+
+
+def cmd_set_color(args):
+    f = GphFile.load(args.file)
+    if f.section("TXCO2000") is None:
+        print(f"{args.file} ({f.name!r}) has no TXCO2000 section; colours live in GEN_HAxx files")
+        return 1
+    for idx, col in zip(args.index_color[::2], args.index_color[1::2]):
+        i = _index(idx)
+        set_color(f, i, col)
+        print(f"TXCO2000[{i:04X}] = {col}  {TXCO_DESCRIPTIONS.get(i, '')}")
+    _write(args, f)
+
+
+def cmd_set(args):
+    f = GphFile.load(args.file)
+    sec = f.section(args.section)
+    if sec is None:
+        print(f"{args.file} has no section {args.section}")
+        return 1
+    changes = {}
+    for kv in args.assignments:
+        if "=" not in kv:
+            print(f"expected field=value, got {kv!r}")
+            return 1
+        k, v = kv.split("=", 1)
+        changes[k.strip()] = parse_value(v)
+    i = _index(args.item)
+    try:
+        update_item(f, sec.name, i, changes)
+    except EncodeError as e:
+        print(f"error: {e}")
+        return 1
+    _print_item(None, sec.name, i, sec.items[i], False)
+    _write(args, f)
+
+
+def cmd_import(args):
+    f = GphFile.load(args.file)
+    for src in args.sources:
+        if os.path.isdir(src):
+            for name, n in import_dir(f, src).items():
+                print(f"{name}: {n} items")
+        elif src.endswith(".txt"):
+            print(f"{src}: {import_texts(f, src)} texts")
+        elif src.endswith(".json"):
+            section = os.path.basename(src)[:8]
+            print(f"{src}: {import_json(f, section, src)} items into {section}")
+        else:
+            print(f"don't know how to import {src}")
+            return 1
+    _write(args, f)
+
+
+def cmd_save(args):
+    f = GphFile.load(args.file)
+    _write(args, f)
+
+
+# ---------------------------------------------------------------------------
 def cmd_inf(args):
     from .inf import InfFile, write_inf_for
     rc = 0
@@ -305,6 +406,45 @@ def main(argv=None):
     s.add_argument("--theme")
     s.add_argument("--no-images", action="store_true")
     s.set_defaults(fn=cmd_export)
+
+    def out_args(s):
+        s.add_argument("-o", "--out", required=True,
+                       help="output file, or a folder (then the unit's file name is used); .bz2 = compressed + .inf")
+        s.add_argument("--version", help="VER field for the .inf, yy.mm.dd.hh.mm (default: keep or now)")
+        s.add_argument("--no-inf", action="store_true", help="do not write the .inf side-car")
+        s.add_argument("--raw", action="store_true", help="with a folder as -o: write an uncompressed .gph")
+
+    s = sub.add_parser("set-text", help="change language texts (TEXT2006 in GEN_<lang>)")
+    s.add_argument("file")
+    s.add_argument("index_text", nargs="+", metavar="INDEX TEXT", help="pairs; index decimal, 0x1f or 1Fh; \\r = line break")
+    out_args(s)
+    s.set_defaults(fn=cmd_set_text)
+
+    s = sub.add_parser("set-color", help="change theme colours (TXCO2000 in GEN_HAxx)")
+    s.add_argument("file")
+    s.add_argument("index_color", nargs="+", metavar="INDEX #RRGGBB[AA]", help="pairs")
+    out_args(s)
+    s.set_defaults(fn=cmd_set_color)
+
+    s = sub.add_parser("set", help="change any field of any item")
+    s.add_argument("file")
+    s.add_argument("-s", "--section", required=True)
+    s.add_argument("-i", "--item", required=True, help="index, decimal or 0x..")
+    s.add_argument("assignments", nargs="+", metavar="FIELD=VALUE",
+                   help="x=10  font=FNT:2  color=#ff8800  texts='[{\"module\":\"GEN\",\"index\":5}]'  pictures[0].texture=7")
+    out_args(s)
+    s.set_defaults(fn=cmd_set)
+
+    s = sub.add_parser("import", help="apply edited `gph export` output (TEXT2006.txt, <SECTION>.json or a folder)")
+    s.add_argument("file")
+    s.add_argument("sources", nargs="+")
+    out_args(s)
+    s.set_defaults(fn=cmd_import)
+
+    s = sub.add_parser("save", help="re-save (e.g. .gph -> .gph.bz2 with .inf)")
+    s.add_argument("file")
+    out_args(s)
+    s.set_defaults(fn=cmd_save)
 
     s = sub.add_parser("inf", help="verify or (re)write the .inf side-car of data files")
     s.add_argument("action", choices=["verify", "write"])

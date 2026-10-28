@@ -6,10 +6,11 @@ colours, every text string and the layout parameters of every widget.
 
 Everything in this document was derived from the files themselves, cross-checked with the
 behaviour of mira308sw's GPH_EDITOR (v01.13/v01.16) and its manual.  Nothing here is
-official.  All integers are **big-endian** unless stated otherwise.  The reader in
+official.  All integers are **big-endian** unless stated otherwise.  The code in
 `src/gph/` implements exactly this description and is verified against ~40 factory files:
-re-serialising them is byte identical, and every item of every file passes the
-relocation-header check described in §3.
+re-serialising them is byte identical, every item of every file passes the
+relocation-header check described in §3, and decoding every item to fields and encoding
+it again (§3.3) reproduces the original bytes.
 
 ## 1. Files and where they live
 
@@ -108,6 +109,28 @@ Example, `FBTN2006` item 0 of `GEN_common` (140 bytes):
 4c 52 47 20 00 3c 00 00   link LRG:60   (image)
 ...                       3 more image links, 4 colour links
 ```
+
+### 3.0 Item layout rules (how the writer rebuilds an item)
+
+All factory items follow one construction, which `gph.encode.encode_item` reproduces
+(verified byte for byte on all 42 000 items):
+
+1. the fixed part: the fields of the schema in order, with one u32 pointer word for every
+   table/blob field at its place in the fixed part (all pointer fields sit at the end of
+   the fixed part);
+2. the entries of every *pointer table* (tables whose elements are themselves pointed to:
+   link lists, `IMAG2000` pictures, `BFNT2000` glyphs, `FONT2007` blocks), in schema
+   order — steps 1 and 2 form the contiguous pointer area that `reloc`/`nreloc` cover;
+3. the data of every scalar table (u8/u16/s16 arrays) and blob, in schema order, each
+   padded with zeros to a multiple of 4;
+4. the records of every pointer table, in schema order and element order: 8 byte links or
+   fixed size records.
+
+An empty table (count 0) has a null pointer (`0xFFFFFFFF`); a null entry inside a pointer
+table is `0xFFFFFFFF` too (unused glyphs, unused font blocks).  Records are never shared:
+two entries with the same link value still point at two copies.  Null links are written as
+`GEN ` + `0xFFFF` + `0x0000`.  Padding bytes are always zero.  Count fields in the fixed
+part equal the list lengths, so an editor only has to change the lists.
 
 ### 3.1 Links (8 bytes)
 

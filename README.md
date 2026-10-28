@@ -1,6 +1,6 @@
 # gph-editor
 
-Reader (and, soon, editor) for the **GPH graphic database files** of the Magneti Marelli
+Reader and editor for the **GPH graphic database files** of the Magneti Marelli
 RT4 / RT5 / RT6 (RNEG) navigation units found in Peugeot and Citroën cars.  These files
 contain the complete skin of the unit: textures, image definitions, bitmap fonts, colour
 themes, every text string and the layout of every menu, button and list.
@@ -21,7 +21,10 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
   image → texture).
 * The `.inf` side-car checksum is understood (two 16-bit CRCs, recovered from GPH_EDITOR.exe)
   and can be verified and written: `gph inf verify FILE.gph.bz2`, `gph inf write FILE.gph.bz2`.
-* Not yet: editing/encoding items, texture encoding, a GUI.
+* **Writing**: every item type is re-encoded from its fields (byte identical to the factory
+  files for all 42 000 items), so texts, colours and any widget field can be changed and the
+  result saved as a valid `.gph.bz2` with a matching `.inf`.
+* Not yet: texture encoding (replacing images with your own PNGs), a GUI.
 
 ## Install
 
@@ -47,6 +50,24 @@ A *workspace* is the set of related files (common, font, one language, one theme
 `-w` at the files or at the `Graphics` folder and use `--language DU --theme HA00` when it
 contains several.
 
+### Editing
+
+```bash
+gph set-text  DU/GEN_DU.gph.bz2 1 "Film" 0x2A 'Regel een\nregel twee' -o out/DU/
+gph set-color HARM00/GEN_HA00.gph.bz2 1 '#ffcc00' 3 '#ff0000' -o out/HARM00/
+gph set GEN_common.gph.bz2 -s FBTN2006 -i 0 x=100 y=200 font=FNT:2 'images=["LRG:1","LRG:2"]' -o out/Common/
+gph export DU/GEN_DU.gph.bz2 -o exp            # edit exp/GEN_DU/TEXT2006.txt or any <SECTION>.json ...
+gph import DU/GEN_DU.gph.bz2 exp/GEN_DU -o out/DU/   # ... and apply it
+gph save GEN_HA00.gph -o out/HARM00/           # .gph -> .gph.bz2 + .inf
+```
+
+`-o` takes a file or a folder; with a folder the file gets the name the unit expects
+(`GEN_DU.gph.bz2`).  Output ending in `.bz2` is compressed and gets its `.inf` side-car
+(fields other than size/checksum are copied from the source's `.inf`; `--version` sets
+`VER`).  Indexes are decimal or `0x..`, as `gph dump` prints them in hex.  In texts `\n`
+is a line break (the unit uses U+000D).  Count fields (`image_count` ...) follow the lists
+automatically.
+
 ## Library
 
 ```python
@@ -61,6 +82,15 @@ texture_image(item.fields).save("TXUR0000.png")
 ws = Workspace.from_paths(["Graphics"], language="DU", theme="HA00")
 menu = ws.item(ws.common, "MENU2006", 1)
 print([ws.text_index(l) for l in menu.fields["texts"]])
+
+from gph.edit import set_text, set_color, update_item, write_package
+lang = GphFile.load("Graphics/DU/GEN_DU.gph.bz2")
+set_text(lang, 1, "Film")
+write_package(lang, "out/DU/GEN_DU.gph.bz2")          # + GEN_DU.gph.bz2.inf
+theme = GphFile.load("Graphics/HARM00/GEN_HA00.gph.bz2")
+set_color(theme, 1, "#ffcc00")
+update_item(theme, "IMAG2000", 5, {"time": 200, "pictures[0].texture": 7})
+write_package(theme, "out/HARM00/")
 ```
 
 ## Tests
