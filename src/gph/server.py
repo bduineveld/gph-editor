@@ -306,6 +306,7 @@ class Editor:
             raise ApiError(f"no section {section}", 404)
         kind = sec.kind
         users = texture_users(of.file) if kind == "TXUR" else {}
+        ws = self.workspace() if kind not in ("TEXT", "TXCO", "IMAG", "TXUR", "BFNT") else None
         out = []
         for idx, _raw in sec.used():
             it = of.item(sec.name, idx)
@@ -333,7 +334,27 @@ class Editor:
             else:
                 row["fields"] = it.to_json()
                 row["problems"] = it.problems + it.check_relocation()
+                row["pictures"] = self._row_pictures(ws, fl)
             out.append(row)
+        return out
+
+    def _row_pictures(self, ws: Workspace, fields: dict, limit: int = 6) -> list[dict]:
+        """The images an item links to (first of each list), compact, for the section tables."""
+        out = []
+        for k, v in fields.items():
+            n = k.lower()
+            if "color" in n or "text" in n or n == "font" or n.endswith("_font"):
+                continue
+            link = next((x for x in v if x is not None), None) if isinstance(v, list) else v
+            if not isinstance(link, Link) or link.is_null:
+                continue
+            r = self._resolve_link(ws, k, link)
+            if r and r["kind"] == "image":
+                out.append({"field": k, "module": r["module"], "index": r["index"], "file": r["file"],
+                            "url": r["url"], "width": r["width"], "height": r["height"],
+                            "count": len([x for x in v if x is not None]) if isinstance(v, list) else 1})
+            if len(out) >= limit:
+                break
         return out
 
     def item_detail(self, of: OpenFile, section: str, index: int) -> dict:

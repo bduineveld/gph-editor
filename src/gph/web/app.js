@@ -310,11 +310,17 @@ function renderOther() {
   const rows = state.rows.filter((r) => matches(r, summary(r.fields)));
   const tb = h("tbody");
   for (const r of rows) {
+    const pics = h("td", { class: "pics" });
+    for (const p of r.pictures || []) {
+      pics.append(h("span", { class: "thumb mini", title: `${p.field}: ${p.module} ${hex4(p.index)} ${p.width}×${p.height}${p.count > 1 ? ` (first of ${p.count})` : ""}`,
+        onclick: (e) => { e.stopPropagation(); go(p.file, "IMAG2000", p.index); } },
+        h("img", { src: p.url + "&v=" + (state.rev[p.file] || 0), loading: "lazy", alt: "" })));
+    }
     tb.append(h("tr", { "data-i": r.index, onclick: () => go(state.route.f, state.route.s, r.index) },
-      h("td", { class: "idx" }, hex4(r.index)),
+      h("td", { class: "idx" }, hex4(r.index)), pics,
       h("td", { class: "mono" }, summary(r.fields), r.problems.length ? h("div", { class: "problem" }, r.problems[0]) : null)));
   }
-  return { shown: rows.length, el: h("table", { class: "items" }, h("thead", {}, h("tr", {}, h("th", {}, "index"), h("th", {}, "fields"))), tb) };
+  return { shown: rows.length, el: h("table", { class: "items" }, h("thead", {}, h("tr", {}, h("th", {}, "index"), h("th", {}, "images"), h("th", {}, "fields"))), tb) };
 }
 
 // ---------------------------------------------------------------------------
