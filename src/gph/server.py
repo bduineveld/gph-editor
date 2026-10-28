@@ -700,7 +700,7 @@ def serve(paths=(), host: str = "127.0.0.1", port: int = 8765, open_browser: boo
     srv = make_server(paths, host, port)
     url = f"http://{host}:{srv.server_address[1]}/"
     n = len(srv.editor.files)  # type: ignore[attr-defined]
-    print(f"gph editor at {url}  ({n} file{'s' if n != 1 else ''} open)  Ctrl-C stops it")
+    print(f"gph editor at {url}  ({n} file{'s' if n != 1 else ''} open)  Ctrl-C stops it", flush=True)
     if open_browser:
         threading.Timer(0.3, webbrowser.open, (url,)).start()
     try:
