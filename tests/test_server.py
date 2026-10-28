@@ -214,7 +214,9 @@ def test_upload_and_browse(client, server):
 
 @pytest.mark.skipif(not FILES, reason="no sample GPH files")
 def test_sample_files(tmp_path):
-    srv = make_server([SAMPLES], port=0)
+    # one consistent set of files: the unit's Graphics tree, not older variants that may sit next to it
+    root = next((os.path.join(SAMPLES, d) for d in ("peugeot", "Graphics") if os.path.isdir(os.path.join(SAMPLES, d))), SAMPLES)
+    srv = make_server([root], port=0)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
