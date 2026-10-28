@@ -177,6 +177,7 @@ Summary (after the 4 byte relocation header; `ptr→` = pointer to):
 | `ACLK2000` clock | u32 overall, 6 colours, link background_image, link center_image, u16 x, y, s16 shadow dx, dy, u16 border widths, u16 point counts, 4 ptr→ s16[] hand polygons |
 | `BFNT2000` bitmap font | see §5 |
 | `FONT2007` font | u16 font_scale, u8 block_count, u8 font_style, ptr→ 256 × ptr→ {u16 high_byte, u16 bfnt slot, "FNT "} |
+| | All six factory fonts share the same ten `BFNT2000` blocks (46 px glyphs); only `font_scale` differs (489, 587, 674, 730, 800, 1000): the unit draws the glyphs at `font_scale`/1000, so FNT 2 is 34 px high. `gph serve` renders texts this way (`fonts.render_text`). |
 | `TXUR2008` texture | see §6 |
 | `IMAG2000` image | u8 flag, u8 image_count, u16 time_ms, u16 width, u16 height, u8 h_stretch, u8 v_stretch, pad2, ptr→ image_count × ptr→ {u32 width-1, u32 height-1, u16 texture slot, pad2} |
 | `PALE2000`, `TXUR2000`, `RAWD2000` | no content in our samples (`TXUR2000` is the RT4 texture format with power-of-two sizes) |

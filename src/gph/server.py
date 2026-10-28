@@ -25,6 +25,7 @@ API (all JSON unless noted)::
     GET  /api/files/ID/image/INDEX.gif           animation
     GET  /api/files/ID/font/INDEX.png            BFNT glyph sheet
     GET  /api/settings                           theme/language in use, screen size, background
+    GET  /api/render.png?font=N&text=..&color=.. text drawn with the unit's bitmap font (scaled)
     POST /api/settings    {"theme": "HA01", "language": "DE"}
 """
 
@@ -216,6 +217,32 @@ class Editor:
         if bg and bg.get("kind") == "image":
             d["background"] = bg
         return d
+
+    def font_blocks(self, ws: Workspace, font_index: int) -> dict[int, dict]:
+        """high byte -> BFNT2000 fields for a FONT2007 entry of the font file."""
+        it = ws.item(ws.font, "FONT2007", font_index)
+        if it is None:
+            raise ApiError(f"font {font_index} not found (is FNT_common open?)", 404)
+        blocks = {}
+        for b in it.fields.get("blocks") or []:
+            if b is None:
+                continue
+            bf = ws.item(ws.font, "BFNT2000", b["bfnt"])
+            if bf is not None:
+                blocks[b["high_byte"]] = bf.fields
+        return blocks
+
+    def render_png(self, font_index: int, text: str, color: str, interline: int = 0) -> bytes:
+        ws = self.workspace()
+        it = ws.item(ws.font, "FONT2007", font_index)
+        if it is None:
+            raise ApiError(f"font {font_index} not found (is FNT_common open?)", 404)
+        try:
+            rgba = tuple(bytes.fromhex(color.lstrip("#").ljust(8, "f")[:8]))
+        except ValueError:
+            raise ApiError(f"bad colour {color!r}")
+        img = fonts.render_text(text, self.font_blocks(ws, font_index), it.fields.get("font_scale", 1000), rgba, interline)
+        return _png(img)
 
     @staticmethod
     def _first_background(common: GphFile) -> Link | None:
@@ -652,6 +679,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.editor.language = d["language"] or None
             self._json(self.editor.settings())
 
+    def r_render(self, q):
+        with self.editor.lock:
+            png = self.editor.render_png(_idx(q.get("font", "0")), q.get("text", ""), q.get("color", "ffffffff"),
+                                         int(q.get("interline", 0)))
+            self._send(200, png, "image/png")
+
     def r_open(self, q):
         d = self._body()
         with self.editor.lock:
@@ -792,6 +825,7 @@ ROUTES = [
     (re.compile(r"/api/files"), "GET", Handler.r_files),
     (re.compile(r"/api/settings"), "GET", Handler.r_settings),
     (re.compile(r"/api/settings"), "POST", Handler.r_settings_set),
+    (re.compile(r"/api/render\.png"), "GET", Handler.r_render),
     (re.compile(r"/api/open"), "POST", Handler.r_open),
     (re.compile(r"/api/upload"), "POST", Handler.r_upload),
     (re.compile(r"/api/browse"), "POST", Handler.r_browse),

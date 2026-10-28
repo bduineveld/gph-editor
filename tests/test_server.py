@@ -252,6 +252,14 @@ def test_sample_files(tmp_path):
         assert btn2["images"][0]["file"] != ha00_file  # now resolved through the HA01 files
         txin = c.ok("GET", f"/api/files/{common['id']}/item/TXIN2000/{btn['text_index']['index']}")["resolved"]
         assert txin["texts"][0]["kind"] == "text" and txin["texts"][0]["text"] == "OK"
+        # text drawn with the unit's bitmap font, scaled by the FONT2007 scale
+        status, ctype, png = c.call("GET", "/api/render.png?font=0&text=OK&color=ffcc00ff", raw=True)
+        im = Image.open(io.BytesIO(png))
+        assert status == 200 and ctype == "image/png" and im.size[1] == round(46 * 587 / 1000) and im.size[0] > 20
+        assert im.getpixel((0, 0))[3] == 0 and im.getextrema()[3][1] == 255  # transparent around, opaque glyphs
+        status, ctype, png2 = c.call("GET", "/api/render.png?font=2&text=A%0DB&interline=2", raw=True)
+        assert Image.open(io.BytesIO(png2)).size[1] == 2 * round(46 * 730 / 1000) + 2
+        assert c.call("GET", "/api/render.png?font=99&text=x", raw=True)[0] == 404
         c.ok("POST", "/api/settings", {"theme": "nope"})  # unknown theme falls back to the first one
         assert c.ok("GET", "/api/settings")["theme"] == "HA00"
     finally:

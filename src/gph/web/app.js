@@ -583,6 +583,7 @@ function resolvedBlock(resolved) {
 
 // ---------------------------------------------------------------------------
 // stage: the widget drawn at its position on the 800x480 screen
+const SAMPLE_TEXT = "Beispiel 12:34";
 const STAGED = new Set(["BKGD", "FXPI", "VRPI", "DYPI", "ITXT", "DTXT", "FXTX", "FBTN", "CBTN", "DBTN", "DCBT", "ICBT", "MCTX", "EDTX", "MENU", "IMEN", "LIST", "EDTB", "VWTX", "FBAR", "SEBR", "CRZO", "ACLK"]);
 
 function stageItems(section, f, r, stateNo = 0) {
@@ -591,10 +592,12 @@ function stageItems(section, f, r, stateNo = 0) {
   const first = (v) => (Array.isArray(v) ? (v[stateNo] || v.find(Boolean)) : v) || null;
   const img = (res, x, y, label) => { if (res && res.kind === "image") items.push({ type: "img", x, y, w: res.width, h: res.height, url: res.url, label: label || `${res.module} ${hex4(res.index)}` }); return res && res.kind === "image" ? res : null; };
   const box = (x, y, w, h, label) => items.push({ type: "box", x, y, w: w || 48, h: h || 24, label });
-  const fontH = (res) => (res && res.kind === "font" && res.height) || 20;
+  const fontH = (res) => (res && res.kind === "font" && res.height) ? Math.max(8, Math.round(res.height * (res.scale || 1000) / 1000)) : 20;
   const colorOf = (res) => (res && res.kind === "color" ? "#" + res.hex.slice(0, 6) : "#ffffff");
   const textOf = (res) => (res && res.kind === "text_index" && res.texts.find((t) => t != null)) || null;
-  const text = (x, y, w, res, color, font, label) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: textOf(res) || label, color: colorOf(color), placeholder: !textOf(res), label });
+  const text = (x, y, w, res, color, font, label) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: textOf(res) || label, color: colorOf(color),
+    hex: color && color.kind === "color" ? color.hex : "ffffffff", font: font && font.kind === "font" ? font.index : null,
+    interline: f.interline || 0, align: f.text_hor_alignment != null ? f.text_hor_alignment : (f.alignment || 0), placeholder: !textOf(res), label });
   const x = f.x || 0, y = f.y || 0;
   switch (kind) {
     case "BKGD": case "FXPI": img(r.image, x, y); break;
@@ -676,7 +679,16 @@ function stageBlock(fid, section, index, fields, resolved) {
     for (const it of items) {
       const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px`;
       if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + "&v=" + (state.rev[bg ? bg.file : 0] || 0), alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }));
-      else if (it.type === "text") stage.append(h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}`, style: `${st};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px` }, it.text));
+      else if (it.type === "text") {
+        const txt = it.placeholder ? (state.sampleText || SAMPLE_TEXT) : it.text;
+        const just = ["flex-start", "center", "flex-end"][it.align] || "flex-start";
+        const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : ""}`,
+          style: `${st};justify-content:${just};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px` });
+        if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
+          src: `/api/render.png?font=${it.font}&text=${encodeURIComponent(txt)}&color=${it.hex}&interline=${it.interline}` }));
+        else box.append(txt);
+        stage.append(box);
+      }
       else stage.append(h("div", { class: "stage-box", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }, h("span", {}, it.label)));
     }
   };
@@ -710,8 +722,11 @@ function stageBlock(fid, section, index, fields, resolved) {
   requestAnimationFrame(fit);
   window.addEventListener("resize", fit);
   const big = h("button", { class: "small", onclick: () => { const clone = stage.cloneNode(true); clone.style.transform = ""; modal(h("div", {}, h("h2", {}, `${section} on screen (1:1)`), h("div", { class: "stage-wrap big" }, clone), h("div", { class: "modal-actions" }, h("button", { onclick: closeModal }, "Close")))); } }, "1:1");
+  const sample = items.some((it) => it.type === "text" && it.placeholder)
+    ? h("input", { type: "text", value: state.sampleText || SAMPLE_TEXT, title: "sample text for a text the unit fills in at runtime", style: "width:150px",
+        oninput: (e) => { state.sampleText = e.target.value; draw(); } }) : null;
   return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
-    h("label", {}, h("span", {}, showBg, " screen background")), stateSel, big), wrap,
+    h("label", {}, h("span", {}, showBg, " screen background")), sample, stateSel, big), wrap,
     h("div", { class: "row" }, h("label", {}, "position"), posX, "×", posY,
       movable ? h("button", { class: "small", onclick: applyPos }, "Apply") : null,
       h("small", { class: "muted" }, movable ? "drag the widget on the screen, or type x/y" : "this item has no x/y")));
