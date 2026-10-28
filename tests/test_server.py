@@ -236,3 +236,16 @@ def test_sample_files(tmp_path):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_busy_port_falls_back_to_a_free_one(capsys):
+    first = make_server([], port=0)
+    try:
+        second = make_server([], port=first.server_address[1])
+        try:
+            assert second.server_address[1] != first.server_address[1]
+            assert "already in use" in capsys.readouterr().err
+        finally:
+            second.server_close()
+    finally:
+        first.server_close()

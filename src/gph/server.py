@@ -29,6 +29,7 @@ API (all JSON unless noted)::
 from __future__ import annotations
 
 import base64
+import errno
 import io
 import json
 import math
@@ -683,7 +684,13 @@ def make_server(paths=(), host: str = "127.0.0.1", port: int = 0) -> ThreadingHT
         except ApiError as e:
             print(f"skip {p}: {e}", file=sys.stderr)
     handler = type("GphHandler", (Handler,), {"editor": editor})
-    srv = ThreadingHTTPServer((host, port), handler)
+    try:
+        srv = ThreadingHTTPServer((host, port), handler)
+    except OSError as e:
+        if port == 0 or e.errno not in (errno.EADDRINUSE, errno.EACCES):
+            raise
+        print(f"port {port} is already in use, picking a free one (use -p PORT to choose)", file=sys.stderr)
+        srv = ThreadingHTTPServer((host, 0), handler)
     srv.daemon_threads = True
     srv.editor = editor  # type: ignore[attr-defined]
     return srv
