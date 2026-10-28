@@ -515,7 +515,7 @@ function detailTexture(d, f, i, item) {
 
 function detailOther(d, f, s, i, item) {
   const fl = item.fields, r = item.resolved || {};
-  if (STAGED.has(s.slice(0, 4))) d.append(stageBlock(s, fl, r));
+  if (STAGED.has(s.slice(0, 4))) d.append(stageBlock(f, s, i, fl, r));
   const geo = ["level", "x", "y", "text_width", "text_dx", "text_dy", "visible_width", "visible_height", "width", "height", "style", "alignment", "text_hor_alignment", "text_ver_alignment", "interline", "time", "blinking_period"]
     .filter((k) => fl[k] != null).map((k) => `${k}=${fl[k]}`).join("  ");
   if (geo) d.append(h("p", { class: "mono muted", style: "font-size:12px" }, geo));
@@ -579,10 +579,10 @@ function resolvedBlock(resolved) {
 // stage: the widget drawn at its position on the 800x480 screen
 const STAGED = new Set(["BKGD", "FXPI", "VRPI", "DYPI", "ITXT", "DTXT", "FXTX", "FBTN", "CBTN", "DBTN", "DCBT", "ICBT", "MCTX", "EDTX", "MENU", "IMEN", "LIST", "EDTB", "VWTX", "FBAR", "SEBR", "CRZO", "ACLK"]);
 
-function stageItems(section, f, r) {
+function stageItems(section, f, r, stateNo = 0) {
   const kind = section.slice(0, 4);
   const items = [];
-  const first = (v) => (Array.isArray(v) ? v.find(Boolean) : v) || null;
+  const first = (v) => (Array.isArray(v) ? (v[stateNo] || v.find(Boolean)) : v) || null;
   const img = (res, x, y, label) => { if (res && res.kind === "image") items.push({ type: "img", x, y, w: res.width, h: res.height, url: res.url, label: label || `${res.module} ${hex4(res.index)}` }); return res && res.kind === "image" ? res : null; };
   const box = (x, y, w, h, label) => items.push({ type: "box", x, y, w: w || 48, h: h || 24, label });
   const fontH = (res) => (res && res.kind === "font" && res.height) || 20;
@@ -595,11 +595,13 @@ function stageItems(section, f, r) {
     case "VRPI": box(x, y, 48, 48, "variable picture"); break;
     case "DYPI": box(0, 0, f.width, f.height, "dynamic picture"); img(r.image, 0, 0); break;
     case "ITXT": case "DTXT": case "FXTX":
-      if (f.has_background || r.background) img(r.background, x + (f.bg_h_offset || 0), y + (f.bg_v_offset || 0), "background (position approximate)");
+      // the background sits at x - offset: DTXT 002C has a 536x48 background with offset (8,10) around a 512 wide
+      // text, ITXT 003E a 280 wide one with offset 176 at x=696, which ends exactly at the screen edge
+      if (f.has_background || r.background) img(r.background, x - (f.bg_h_offset || 0), y - (f.bg_v_offset || 0), "background (x/y minus bg offset)");
       text(x, y, f.text_width, r.text_index, r.text_color, r.font, kind === "ITXT" ? "indexed text" : kind === "DTXT" ? "dynamic text" : "fixed text");
       break;
     case "FBTN": case "CBTN": case "DBTN": case "DCBT": case "ICBT": case "MCTX": case "EDTX": {
-      const im = img(first(r.images), x, y, "state 0 image");
+      const im = img(first(r.images), x, y, `state ${stateNo} image`);
       if (kind === "DBTN") img(r.arrow_image, x + (f.arrow_dx || 0), y + (f.arrow_dy || 0), "arrow");
       const col = first(r.text_colors) || first(r.not_selected_text_colors);
       text(x + (f.text_dx || 0), y + (f.text_dy || 0), f.text_width || (im ? im.width - (f.text_dx || 0) : 0), r.text_index || first(r.text_indexes), col, r.font, kind.toLowerCase() + " text");
@@ -640,34 +642,73 @@ function stageItems(section, f, r) {
   return items;
 }
 
-function stageBlock(section, fields, resolved) {
+function stageBlock(fid, section, index, fields, resolved) {
   const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
   const bg = state.settings && state.settings.background;
   const wrap = h("div", { class: "stage-wrap" });
   const stage = h("div", { class: "stage", style: `width:${scr.width}px;height:${scr.height}px` });
   const showBg = h("input", { type: "checkbox", checked: state.stageBg !== false });
-  const items = stageItems(section, fields, resolved);
+  const states = Math.max((resolved.images || []).length, (resolved.text_colors || []).length);
+  const stateSel = states > 1 ? h("select", { class: "small" }, ...Array.from({ length: states }, (_, n) => h("option", { value: n }, `state ${n}`))) : null;
+  let items = stageItems(section, fields, resolved);
+  let scale = 1, moved = null;  // moved = {dx, dy} in screen pixels while dragging / before apply
+  const movable = fields.x != null && fields.y != null;
+  const posX = h("input", { type: "number", min: 0, max: 65535, value: fields.x, disabled: !movable });
+  const posY = h("input", { type: "number", min: 0, max: 65535, value: fields.y, disabled: !movable });
+  const applyPos = async () => {
+    const changes = { x: +posX.value, y: +posY.value };
+    const r = await act(() => api("PUT", `/api/files/${fid}/item/${section}/${index}`, { changes }));
+    updateFile(r.file); await loadSection(); showDetail(); toast(`${section} [${hex4(index)}] moved to ${changes.x},${changes.y}`);
+  };
   const draw = () => {
     stage.innerHTML = "";
+    if (moved) stage.style.cursor = "grabbing";
     if (showBg.checked && bg && !(section.startsWith("BKGD") && fields.x === 0 && fields.y === 0 && resolved.image && resolved.image.index === bg.index)) {
       stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + (state.rev[bg.file] || 0), alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
     }
+    const ox = moved ? moved.dx : 0, oy = moved ? moved.dy : 0;
     for (const it of items) {
-      const st = `left:${it.x}px;top:${it.y}px;width:${it.w}px;height:${it.h}px`;
+      const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px`;
       if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + "&v=" + (state.rev[bg ? bg.file : 0] || 0), alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }));
       else if (it.type === "text") stage.append(h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}`, style: `${st};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px` }, it.text));
       else stage.append(h("div", { class: "stage-box", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }, h("span", {}, it.label)));
     }
   };
   showBg.onchange = () => { state.stageBg = showBg.checked; draw(); };
+  if (stateSel) stateSel.onchange = () => { items = stageItems(section, fields, resolved, +stateSel.value); draw(); };
+  // drag the whole widget: every drawn part follows x/y, so they move together
+  if (movable) {
+    stage.classList.add("movable");
+    let start = null;
+    stage.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      start = { x: e.clientX, y: e.clientY }; moved = { dx: 0, dy: 0 };
+      stage.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    stage.addEventListener("pointermove", (e) => {
+      if (!start) return;
+      moved = { dx: Math.round((e.clientX - start.x) / scale), dy: Math.round((e.clientY - start.y) / scale) };
+      posX.value = Math.max(0, fields.x + moved.dx); posY.value = Math.max(0, fields.y + moved.dy);
+      draw();
+    });
+    stage.addEventListener("pointerup", async (e) => {
+      if (!start) return;
+      const m = moved; start = null; moved = null; stage.style.cursor = "";
+      if (!m || (!m.dx && !m.dy)) { draw(); return; }
+      await applyPos();
+    });
+  }
   draw();
   wrap.append(stage);
-  const fit = () => { const sc = Math.min(1, (wrap.clientWidth || 340) / scr.width); stage.style.transform = `scale(${sc})`; wrap.style.height = Math.round(scr.height * sc) + "px"; };
+  const fit = () => { scale = Math.min(1, (wrap.clientWidth || 340) / scr.width); stage.style.transform = `scale(${scale})`; wrap.style.height = Math.round(scr.height * scale) + "px"; };
   requestAnimationFrame(fit);
   window.addEventListener("resize", fit);
   const big = h("button", { class: "small", onclick: () => { const clone = stage.cloneNode(true); clone.style.transform = ""; modal(h("div", {}, h("h2", {}, `${section} on screen (1:1)`), h("div", { class: "stage-wrap big" }, clone), h("div", { class: "modal-actions" }, h("button", { onclick: closeModal }, "Close")))); } }, "1:1");
   return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
-    h("label", {}, h("span", {}, showBg, " screen background")), h("small", { class: "muted" }, `${scr.width}×${scr.height}, positions from the item; hover for details`), big), wrap);
+    h("label", {}, h("span", {}, showBg, " screen background")), stateSel, big), wrap,
+    h("div", { class: "row" }, h("label", {}, "position"), posX, "×", posY,
+      movable ? h("button", { class: "small", onclick: applyPos }, "Apply") : null,
+      h("small", { class: "muted" }, movable ? "drag the widget on the screen, or type x/y" : "this item has no x/y")));
 }
 
 function rawJson(f, s, i, item, open) {

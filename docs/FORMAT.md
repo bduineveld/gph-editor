@@ -155,6 +155,7 @@ Summary (after the 4 byte relocation header; `ptr→` = pointer to):
 | `DYPI2007` dynamic picture | u32 overall, u16 width, u16 height, link image, u16 dependencies, u16 enlargement |
 | `ITXT2000` indexed text | u32 level, u32 has_background, u32 blinking_period, link text_color, link font, link background, u16 x, y, text_width, interline, bg_h_offset, bg_v_offset, u8 hor_align, u8 ver_align, pad2 |
 | `DTXT2000` dynamic text | u32 level, is_synchronized, blinking_period, has_background, then as ITXT from the links on |
+| | *Text backgrounds*: the background image sits at (`x` − `bg_h_offset`, `y` − `bg_v_offset`), the text at (`x`, `y`) inside it. Evidence: `DTXT2000[2C]` has a 536×48 background with offset (8, 10) around a 512 wide text; `ITXT2000[3E]` a 280 wide one with offset 176 at x = 696, which then ends exactly at the 800 px screen edge. |
 | `FXTX2006` fixed text | u32 level, u32 blinking_period, link font, link text_color, link background, link text_index, u16 x, y, bg_h_offset, bg_v_offset, text_width, u8 interline, u8 style |
 | `TXIN2000` text index | u8 style, u8 unit_dependance, u8 text_count, pad1, char[4] module, ptr→ u16[text_count] text slots |
 | `TEXT2006` text | UTF-16BE string, NUL terminated, NUL padded to 4 bytes; `U+000D` = line break |

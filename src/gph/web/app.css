@@ -151,3 +151,5 @@ ol.reflist li::marker { color: var(--fg2); font-family: var(--mono); font-size: 
 .stage-text.ph { color: rgba(255,255,255,.5) !important; font-style: italic; }
 .stage-box { position: absolute; outline: 1px dashed rgba(76,195,138,.9); color: rgba(76,195,138,.9); font-size: 11px; overflow: hidden; }
 .stage-box span { background: rgba(0,0,0,.5); padding: 0 3px; }
+.stage.movable { cursor: grab; }
+.stage.movable img, .stage.movable div { pointer-events: none; }
