@@ -341,6 +341,24 @@ class ScreenDatabase:
                             n += 1
         return n
 
+    def names_json(self) -> dict:
+        """The names/modules/classes found (by :meth:`enrich_from_modules`), to save next to the
+        database as ``GraphicBase.RNEG.gz.names.json`` for hosts that have no firmware modules."""
+        return {str(sid): {"name": sc.name, "module": sc.module, "class": sc.class_name}
+                for sid, sc in sorted(self.screens.items()) if sc.name or sc.module or sc.class_name}
+
+    def apply_names(self, names: dict) -> int:
+        n = 0
+        for sid, d in names.items():
+            sc = self.screens.get(int(sid))
+            if sc is None or not isinstance(d, dict):
+                continue
+            sc.name = d.get("name") or sc.name
+            sc.module = d.get("module") or sc.module
+            sc.class_name = d.get("class") or sc.class_name
+            n += 1
+        return n
+
     # -- queries ------------------------------------------------------------------
     def uses(self, section: str, index: int) -> list[int]:
         """Ids of the screens that show ``section[index]`` of GEN_common."""

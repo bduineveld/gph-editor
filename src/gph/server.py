@@ -36,6 +36,7 @@ API (all JSON unless noted)::
 from __future__ import annotations
 
 import base64
+import copy
 import errno
 import io
 import json
@@ -74,7 +75,7 @@ SCREEN = (800, 480)   # RT6 display; background 0 of GEN_common is an 800x480 im
 
 # Public (online) mode: every visitor gets their own Editor, selected by a cookie; nothing is read from
 # or written to the server's disk (no open/browse/save, downloads instead), with these limits.
-PUBLIC_MAX_FILES = 24           # open files per visitor
+PUBLIC_MAX_FILES = 40           # open files per visitor (the server's preloaded files included)
 PUBLIC_MAX_BODY = 64 << 20      # upload size
 PUBLIC_SESSION_IDLE = 2 * 3600  # seconds before an idle visitor's files are dropped
 PUBLIC_MAX_SESSIONS = 100
@@ -98,12 +99,22 @@ class OpenFile:
     path: str | None
     dirty: bool = False
     history: list = field(default_factory=list)
+    shared: bool = False   #: public mode: ``file`` is the server's preloaded copy; copied before the first edit
+    name: str | None = None   #: label to show when there is no path (a preloaded file keeps its file name)
     _items: dict = field(default_factory=dict, repr=False)
     _png: dict = field(default_factory=dict, repr=False)
 
     @property
     def label(self) -> str:
-        return os.path.basename(self.path) if self.path else default_filename(self.file, self.file.compressed)
+        return os.path.basename(self.path) if self.path else self.name or default_filename(self.file, self.file.compressed)
+
+    def unshare(self) -> None:
+        """Give this OpenFile its own copy of the sections (items are immutable bytes, so a list copy is enough)."""
+        if self.shared:
+            f = copy.copy(self.file)
+            f.sections = [Section(s.name, list(s.items)) for s in self.file.sections]
+            self.file = f
+            self.shared = False
 
     def item(self, section: str, index: int) -> DecodedItem | None:
         key = (section, index)
@@ -115,6 +126,7 @@ class OpenFile:
         return self._items[key]
 
     def snapshot(self) -> None:
+        self.unshare()
         self.history.append([(s.name, list(s.items)) for s in self.file.sections])
         del self.history[:-MAX_UNDO]
 
@@ -207,6 +219,9 @@ class Editor:
         mmi = find_mmi_folder(path)
         if mmi:
             db.enrich_from_modules(mmi)
+        elif os.path.exists(path + ".names.json"):   # names saved earlier with `gph screens-names` (no firmware needed)
+            with open(path + ".names.json", encoding="utf-8") as fh:
+                db.apply_names(json.load(fh))
         self.screens = db
         return db
 
@@ -714,6 +729,9 @@ class Handler(BaseHTTPRequestHandler):
                 token = secrets.token_urlsafe(24)
                 ed = Editor(public=True)
                 ed.screens = self.editor_.screens   # the unit's screen database, if the server has one
+                for tpl in self.editor_.files.values():   # files preloaded on the server (GPH_PRELOAD): shared until edited
+                    of = ed._add(tpl.file, None)
+                    of.shared, of.name = True, tpl.label
                 self._set_cookie = token
             self.sessions[token] = (ed, now)
         return ed

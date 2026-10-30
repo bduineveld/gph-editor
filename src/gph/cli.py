@@ -404,6 +404,23 @@ def cmd_preview(args):
 
 
 # ---------------------------------------------------------------------------
+def cmd_screens_names(args):
+    """Save the screen names found in the firmware modules next to the GraphicBase (``*.names.json``)."""
+    from .screens import ScreenDatabase, find_mmi_folder
+    db = ScreenDatabase.load(args.graphicbase)
+    mmi = args.mmi or find_mmi_folder(args.graphicbase)
+    if not mmi:
+        print("no Application/MMI folder found; give it with --mmi", file=sys.stderr)
+        return 1
+    db.enrich_from_modules(mmi)
+    out = args.out or args.graphicbase + ".names.json"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(db.names_json(), fh, indent=0)
+    s = db.summary()
+    print(f"{out}: {s['named']} of {s['count']} screens named")
+    return 0
+
+
 def cmd_serve(args):
     from .server import serve
     public = args.public or os.environ.get("GPH_PUBLIC") == "1"
@@ -411,7 +428,8 @@ def cmd_serve(args):
     if screens and not os.path.exists(screens):
         print(f"skip screens: {screens} not found", file=sys.stderr)
         screens = None
-    serve(args.paths, host=args.host, port=args.port, open_browser=not args.no_browser and not public,
+    paths = list(args.paths) + [p for p in os.environ.get("GPH_PRELOAD", "").split(os.pathsep) if p]
+    serve(paths, host=args.host, port=args.port, open_browser=not args.no_browser and not public,
           screens=screens, public=public)
 
 
@@ -542,6 +560,13 @@ def main(argv=None):
     out_args(s)
     s.set_defaults(fn=cmd_save)
 
+    s = sub.add_parser("screens-names", help="save the screen names from the firmware's MMI modules next to a GraphicBase.RNEG.gz "
+                       "(GraphicBase.RNEG.gz.names.json), so a server without the modules can show them")
+    s.add_argument("graphicbase", help="Data_Base/Graphics/GraphicBase.RNEG.gz of the software update")
+    s.add_argument("--mmi", help="Application/MMI folder (default: found next to the GraphicBase)")
+    s.add_argument("-o", "--out", help="output file (default: <graphicbase>.names.json)")
+    s.set_defaults(fn=cmd_screens_names)
+
     s = sub.add_parser("serve", help="open the web UI (local editor in the browser)")
     s.add_argument("paths", nargs="*", help="GPH files or folders to open at start")
     s.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT") or 8765),
@@ -552,7 +577,8 @@ def main(argv=None):
                    "of the software update) to show complete screens; found automatically when it sits under an opened folder "
                    "(or $GPH_SCREENS)")
     s.add_argument("--public", action="store_true", help="online mode (or GPH_PUBLIC=1): every visitor gets their own session, "
-                   "files come in by upload and go out by download, the server's disk is never touched")
+                   "files come in by upload and go out by download, the server's disk is never touched; files given here "
+                   "(or in $GPH_PRELOAD, a folder) are preloaded for every visitor")
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("inf", help="verify or (re)write the .inf side-car of data files")

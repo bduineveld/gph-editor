@@ -106,3 +106,43 @@ def test_upload_graphic_base_and_limits(public_server):
         assert v.upload("GEN_HA09.gph", _theme_bytes())[0] == 200
     st, d = v.upload("GEN_HA09.gph", _theme_bytes())
     assert st == 400 and "at most" in d["error"]
+
+
+@pytest.fixture(scope="module")
+def preloaded_server(tmp_path_factory):
+    """A public server with files preloaded from a folder (GPH_PRELOAD on the online version)."""
+    d = tmp_path_factory.mktemp("preload")
+    (d / "HARM09").mkdir()
+    (d / "HARM09" / "GEN_HA09.gph").write_bytes(_theme_bytes())
+    (d / "Graphics").mkdir()
+    (d / "Graphics" / "GraphicBase.RNEG.gz").write_bytes(packed(sample_elf()))
+    srv = make_server([str(d)], port=0, public=True)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield srv
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_preloaded_files_are_shared_until_edited(preloaded_server):
+    a, b = Visitor(preloaded_server), Visitor(preloaded_server)
+    fa = a.json("GET", "/api/files")[1]["files"]
+    assert [f["label"] for f in fa] == ["GEN_HA09.gph"] and fa[0]["path"] is None and fa[0]["dirty"] is False  # file name kept, path hidden
+    assert a.json("GET", "/api/settings")[1]["screens"]["count"] == 2
+    fid = fa[0]["id"]
+    before = a.json("GET", f"/api/files/{fid}/items?section=TXCO2000")[1]["items"][0]["hex"]
+    # a edits: a sees the change, b and a fresh visitor still see the server's copy
+    st, _ = a.json("POST", f"/api/files/{fid}/color/0", {"color": "#12345678"})
+    assert st == 200
+    assert a.json("GET", f"/api/files/{fid}/items?section=TXCO2000")[1]["items"][0]["hex"] == "12345678"
+    assert b.json("GET", f"/api/files/{fid}/items?section=TXCO2000")[1]["items"][0]["hex"] == before
+    assert Visitor(preloaded_server).json("GET", f"/api/files/{fid}/items?section=TXCO2000")[1]["items"][0]["hex"] == before
+    # undo goes back to the shared content; the download works on the visitor's copy
+    assert a.json("POST", f"/api/files/{fid}/undo", {})[0] == 200
+    assert a.json("GET", f"/api/files/{fid}/items?section=TXCO2000")[1]["items"][0]["hex"] == before
+    st, headers, raw = a.call("GET", f"/api/files/{fid}/download.zip")
+    assert st == 200 and zipfile.ZipFile(io.BytesIO(raw)).namelist()[0] == "GEN_HA09.gph.bz2"
+    # closing it only affects this visitor
+    assert a.json("POST", f"/api/files/{fid}/close", {})[0] == 200
+    assert a.json("GET", "/api/files")[1]["files"] == []
+    assert len(b.json("GET", "/api/files")[1]["files"]) == 1

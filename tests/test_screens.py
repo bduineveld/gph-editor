@@ -148,6 +148,26 @@ def test_name_from_list(symbol, name):
     assert ScreenDatabase.name_from_list(symbol) == name
 
 
+def test_names_json_round_trip(tmp_path):
+    db = ScreenDatabase.from_bytes(sample_elf())
+    db.screens[8].name, db.screens[8].module, db.screens[8].class_name = "MENU_X_Z1_0", "menu", "C_Menu_MENU_X_Z1_0"
+    names = db.names_json()
+    assert names == {"7": {"name": "CLOCK_F3_Z5_2", "module": None, "class": None},
+                     "8": {"name": "MENU_X_Z1_0", "module": "menu", "class": "C_Menu_MENU_X_Z1_0"}}
+    fresh = ScreenDatabase.from_bytes(sample_elf())
+    assert fresh.screens[8].name is None
+    assert fresh.apply_names(json.loads(json.dumps(names))) == 2
+    assert fresh.screens[8].name == "MENU_X_Z1_0" and fresh.screens[8].module == "menu"
+    # the server picks the side-car up when no firmware modules sit next to the database
+    from gph.server import Editor
+    gz = tmp_path / "GraphicBase.RNEG.gz"
+    gz.write_bytes(packed(sample_elf()))
+    (tmp_path / "GraphicBase.RNEG.gz.names.json").write_text(json.dumps(names))
+    ed = Editor()
+    ed.open_screens(str(gz))
+    assert ed.screens.screens[8].name == "MENU_X_Z1_0"
+
+
 def test_find_graphic_base(tmp_path):
     assert find_graphic_base(tmp_path) is None
     d = tmp_path / "Data_Base" / "Graphics"

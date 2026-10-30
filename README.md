@@ -105,9 +105,11 @@ read or written.  The `Dockerfile` builds that image:
 docker build -t gph-editor . && docker run --rm -p 8765:8765 gph-editor
 ```
 
-Set `GPH_SCREENS` to a mounted `GraphicBase.RNEG.gz` to offer the Screens view to everyone
-(it is not in the image: the unit's files are PSA/Magneti Marelli content); visitors can also
-upload that file themselves.
+Set `GPH_PRELOAD` to a mounted folder and every visitor starts with the GPH files found
+there (shared in memory, copied for a visitor as soon as they edit); a `GraphicBase.RNEG.gz`
+under that folder (or one named by `GPH_SCREENS`) gives everyone the Screens view.  None of
+that is in the image: the unit's files are PSA/Magneti Marelli content.  Visitors can also
+upload those files themselves.
 
 ### Editing from the command line
 
