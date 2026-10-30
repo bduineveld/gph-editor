@@ -368,7 +368,7 @@ function renderScreens(keepFocus) {
       h("td", { class: "mono muted", style: "font-size:12px" }, r.sections.map((x) => (x.startsWith("type") ? "?" : x.slice(0, 4))).join(" "))));
   }
   const info = state.settings && state.settings.screens;
-  const head = viewHead("Screens", info ? info.path.split("/").slice(-3).join("/") : "", null);
+  const head = viewHead("Screens", info ? (isPublic() ? info.path.split("/").pop() : info.path.split("/").slice(-3).join("/")) : "", null);
   main.append(head, h("p", { class: "muted", style: "margin:-6px 0 10px" },
     "Every screen the unit's software can show, with the GEN_common widgets it is built from (names come from the firmware modules; the unit fills in texts and pictures at runtime)."),
     h("table", { class: "items" }, h("thead", {}, h("tr", {}, h("th", {}, "id"), h("th", {}, "screen"), h("th", {}, "module"), h("th", {}, "widgets"), h("th", {}, "kinds"))), tb));
