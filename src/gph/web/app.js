@@ -58,6 +58,13 @@ async function act(fn) {
 }
 
 const fileById = (id) => state.files.find((f) => f.id === id);
+const isPublic = () => !!(state.settings && state.settings.public);
+
+async function refreshFiles() {
+  const r = await api("GET", "/api/files");
+  state.files = r.files;
+  renderSidebar();
+}
 
 function updateFile(info) {
   const i = state.files.findIndex((f) => f.id === info.id);
@@ -124,10 +131,12 @@ function renderSidebar() {
       h("span", { class: "dot", title: "unsaved changes" }),
       h("span", { class: "name" }, f.label),
       h("small", { class: "mono" }, f.name.trim())));
+    const pub = isPublic();
     box.append(h("div", { class: "file-tools" },
-      h("button", { class: "small primary", onclick: () => saveDialog(f.id) }, "Save…"),
+      pub ? h("button", { class: "small primary", onclick: () => downloadDialog(f.id) }, "Download")
+          : h("button", { class: "small primary", onclick: () => saveDialog(f.id) }, "Save…"),
       h("button", { class: "small", disabled: !f.undo, onclick: () => fileAction(f.id, "undo") }, "Undo"),
-      h("button", { class: "small", disabled: !f.dirty || !f.path, onclick: () => confirmRevert(f.id) }, "Revert"),
+      pub ? null : h("button", { class: "small", disabled: !f.dirty || !f.path, onclick: () => confirmRevert(f.id) }, "Revert"),
       h("button", { class: "small", onclick: () => closeFile(f.id) }, "Close")));
     for (const [g, title] of GROUP_ORDER) {
       const secs = f.sections.filter((s) => s.group === g && (g !== "other" || s.used));
@@ -186,7 +195,8 @@ async function loadSection() {
   if (f == null || !s || !fileById(f)) {
     state.rows = [];
     main.innerHTML = "";
-    main.append(h("div", { class: "empty" }, state.files.length ? "Pick a section on the left." : "Open a GPH file or folder to start."));
+    main.append(h("div", { class: "empty" }, state.files.length ? "Pick a section on the left."
+      : isPublic() ? "Upload GPH files to start (drop them on this page, or use Upload…)." : "Open a GPH file or folder to start."));
     return;
   }
   const r = await act(() => api("GET", `/api/files/${f}/items?section=${encodeURIComponent(s)}`));
@@ -891,7 +901,39 @@ function rawJson(f, s, i, item, open) {
 function modal(content) { const m = $("#modal"); $(".modal-box", m).innerHTML = ""; $(".modal-box", m).append(content); m.hidden = false; }
 function closeModal() { $("#modal").hidden = true; }
 
+function uploadDialog() {
+  const up = h("input", { type: "file", accept: ".gph,.bz2,.gz", multiple: true, onchange: () => uploadFiles(up.files) });
+  modal(h("div", {},
+    h("h2", {}, "Upload"),
+    h("p", {}, "Pick the GPH files of your unit: they live in ", h("code", {}, "SDC/Data_Base/Graphics/RNEG"),
+      " (", h("code", {}, "Common/GEN_common.gph.bz2"), ", ", h("code", {}, "Common/FNT_common.gph.bz2"), ", one language such as ",
+      h("code", {}, "DU/GEN_DU.gph.bz2"), " and a theme folder like ", h("code", {}, "HARM00"), "). Upload them together and every link between them is resolved."),
+    h("p", { class: "muted" }, "Optional: ", h("code", {}, "Data_Base/Graphics/GraphicBase.RNEG.gz"), " from the unit's software update adds the Screens view. ",
+      "Files stay in your own session on the server for two hours of inactivity and are never written to its disk; use Download to get the edited package."),
+    h("div", { class: "row" }, up),
+    h("div", { class: "modal-actions" }, h("button", { onclick: closeModal }, "Cancel"))));
+}
+
+function downloadDialog(fid) {
+  const f = fileById(fid);
+  const ver = h("input", { type: "text", placeholder: "keep / now", size: 16, class: "mono" });
+  const go = () => {
+    const q = ver.value.trim() ? "?version=" + encodeURIComponent(ver.value.trim()) : "";
+    window.location.href = `/api/files/${fid}/download.zip${q}`;
+    closeModal();
+    toast("Download started: a zip with the .gph.bz2 and its .inf");
+    setTimeout(() => refreshFiles().catch(() => {}), 1500);
+  };
+  modal(h("div", {},
+    h("h2", {}, "Download ", h("code", {}, f.label)),
+    h("p", { class: "muted" }, "You get a zip with the compressed package and its .inf side-car (checksums included), ready for the ",
+      h("code", {}, "Graphics/RNEG"), " folder of the unit."),
+    h("div", { class: "row" }, h("label", {}, "VER"), ver, h("small", {}, "yy.mm.dd.hh.mm")),
+    h("div", { class: "modal-actions" }, h("button", { onclick: closeModal }, "Cancel"), h("button", { class: "primary", onclick: go }, "Download"))));
+}
+
 async function openDialog(startPath) {
+  if (isPublic()) return uploadDialog();
   const pathIn = h("input", { type: "text", placeholder: "/path/to/Graphics or a .gph.bz2 file" });
   const list = h("div", { class: "browse" });
   const openPath = async (p) => {
@@ -933,8 +975,9 @@ async function uploadFiles(files) {
       const r = await act(() => api("POST", "/api/upload", { name: file.name, data_b64: data }));
       for (const f of r.opened) updateFile(f);
       closeModal();
+      if (r.screens) { state.screens = null; await loadSettings(); renderSidebar(); toast(`Screen database loaded: ${r.screens.count} screens`); if (!r.opened.length) go(null, "screens"); }
       const f = r.opened[0];
-      go(f.id, f.sections.find((s) => s.used)?.name);
+      if (f) go(f.id, f.sections.find((s) => s.used)?.name);
     } catch (e) { /* toast shown */ }
   }
 }
@@ -1003,8 +1046,12 @@ async function boot() {
   const r = await api("GET", "/api/files");
   state.files = r.files;
   for (const f of state.files) state.rev[f.id] = 1;
-  $("#status").textContent = `working folder ${r.cwd}`;
+  $("#status").textContent = r.cwd ? `working folder ${r.cwd}` : "";
   await loadSettings();
+  if (isPublic()) {
+    $("#btn-open").textContent = "Upload…";
+    $("#status").textContent = "online version: your files stay in your own session (two hours of inactivity), nothing is written on the server";
+  }
   renderSidebar();
   if (!location.hash && state.files.length) {
     const f = state.files[0];

@@ -406,7 +406,13 @@ def cmd_preview(args):
 # ---------------------------------------------------------------------------
 def cmd_serve(args):
     from .server import serve
-    serve(args.paths, host=args.host, port=args.port, open_browser=not args.no_browser, screens=args.screens)
+    public = args.public or os.environ.get("GPH_PUBLIC") == "1"
+    screens = args.screens or os.environ.get("GPH_SCREENS") or None
+    if screens and not os.path.exists(screens):
+        print(f"skip screens: {screens} not found", file=sys.stderr)
+        screens = None
+    serve(args.paths, host=args.host, port=args.port, open_browser=not args.no_browser and not public,
+          screens=screens, public=public)
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +549,10 @@ def main(argv=None):
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--no-browser", action="store_true", help="do not open a browser window")
     s.add_argument("--screens", metavar="GRAPHICBASE", help="the unit's screen database (Data_Base/Graphics/GraphicBase.RNEG.gz "
-                   "of the software update) to show complete screens; found automatically when it sits under an opened folder")
+                   "of the software update) to show complete screens; found automatically when it sits under an opened folder "
+                   "(or $GPH_SCREENS)")
+    s.add_argument("--public", action="store_true", help="online mode (or GPH_PUBLIC=1): every visitor gets their own session, "
+                   "files come in by upload and go out by download, the server's disk is never touched")
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("inf", help="verify or (re)write the .inf side-car of data files")

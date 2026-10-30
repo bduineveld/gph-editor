@@ -12,7 +12,7 @@ def _pairs():
     out = []
     for root, _d, files in os.walk(SAMPLES) if os.path.isdir(SAMPLES) else []:
         for fn in files:
-            if fn.endswith(".inf") and os.path.exists(os.path.join(root, fn[:-4])):
+            if fn.endswith(".inf") and not fn.startswith("._") and os.path.exists(os.path.join(root, fn[:-4])):
                 out.append(os.path.join(root, fn[:-4]))
     return sorted(out)
 

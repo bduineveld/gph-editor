@@ -26,3 +26,6 @@ tools/firmware/*.elf
 tools/firmware/*.bin
 tools/firmware/*.gz
 tools/firmware/screens.json
+
+# AppleDouble files on exFAT volumes
+._*

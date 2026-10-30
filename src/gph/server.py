@@ -43,10 +43,14 @@ import math
 import mimetypes
 import os
 import re
+import secrets
 import sys
+import tempfile
 import threading
+import time
 import traceback
 import webbrowser
+import zipfile
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -67,6 +71,14 @@ from .workspace import Workspace
 
 MAX_UNDO = 50
 SCREEN = (800, 480)   # RT6 display; background 0 of GEN_common is an 800x480 image at (0, 0)
+
+# Public (online) mode: every visitor gets their own Editor, selected by a cookie; nothing is read from
+# or written to the server's disk (no open/browse/save, downloads instead), with these limits.
+PUBLIC_MAX_FILES = 24           # open files per visitor
+PUBLIC_MAX_BODY = 64 << 20      # upload size
+PUBLIC_SESSION_IDLE = 2 * 3600  # seconds before an idle visitor's files are dropped
+PUBLIC_MAX_SESSIONS = 100
+COOKIE = "gph_sid"
 
 #: how the UI groups sections
 SECTION_GROUP = {"TEXT": "texts", "TXCO": "colors", "IMAG": "images", "TXUR": "textures", "BFNT": "fonts"}
@@ -139,10 +151,11 @@ class OpenFile:
 class Editor:
     """All state of one server: the open files and a lock around every mutation."""
 
-    def __init__(self):
+    def __init__(self, public: bool = False):
         self.files: dict[int, OpenFile] = {}
         self._next = 1
         self.lock = threading.RLock()
+        self.public = public               # online version: uploads and downloads only, see PUBLIC_*
         self.theme: str | None = None      # "HA00" ...; None = first theme found
         self.language: str | None = None   # "DE" ...; None = first language found
         self.screens: ScreenDatabase | None = None   # the unit's screen database, when a GraphicBase was opened
@@ -197,8 +210,18 @@ class Editor:
         self.screens = db
         return db
 
-    def open_bytes(self, name: str, data: bytes) -> OpenFile:
+    def open_bytes(self, name: str, data: bytes) -> OpenFile | None:
+        """A file sent by the browser.  A ``GraphicBase.RNEG(.gz)`` becomes the screen database
+        (returns None); anything else must be a GPH file."""
         import bz2
+        if os.path.basename(name).lower().startswith("graphicbase."):
+            try:
+                self.screens = ScreenDatabase.from_bytes(data, os.path.basename(name))
+            except (ScreenError, ValueError) as e:
+                raise ApiError(f"{name}: {e}")
+            return None
+        if self.public and len(self.files) >= PUBLIC_MAX_FILES:
+            raise ApiError(f"at most {PUBLIC_MAX_FILES} files can be open at once; close some first")
         if data[:3] == b"BZh":
             data = bz2.decompress(data)
             compressed = True
@@ -245,7 +268,7 @@ class Editor:
         lang = ws.language.variant.strip() if ws.language else None
         d = {"theme": theme, "language": lang, "themes": self.themes(), "languages": self.languages(),
              "screen": {"width": SCREEN[0], "height": SCREEN[1]}, "background": None,
-             "screens": self.screens.summary() if self.screens else None}
+             "screens": self.screens.summary() if self.screens else None, "public": self.public}
         bg = self._resolve_link(ws, "image", ws.common and self._first_background(ws.common))
         if bg and bg.get("kind") == "image":
             d["background"] = bg
@@ -591,6 +614,21 @@ class Editor:
             r["inf_fields"] = InfFile.load(inf_path).fields
         return r
 
+    def download(self, of: OpenFile, version: str | None) -> tuple[str, bytes]:
+        """The package as a zip holding the ``.gph.bz2`` and its ``.inf`` (the online version writes
+        nothing to disk).  Returns (zip file name, zip bytes)."""
+        name = default_filename(of.file, True)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, name)
+            inf_path = write_package(of.file, out, version=version or None, inf=True)
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(out, name)
+                if inf_path:
+                    z.write(inf_path, os.path.basename(inf_path))
+        of.dirty = False
+        return name.replace(".gph.bz2", "") + ".zip", buf.getvalue()
+
 
 def _png(img: Image.Image) -> bytes:
     buf = io.BytesIO()
@@ -645,19 +683,56 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "web")
 
 
 class Handler(BaseHTTPRequestHandler):
-    editor: Editor  # set by serve()
+    editor_: Editor  # the one editor of a local server (set by make_server); in public mode the template
+    public = False
+    sessions: dict[str, tuple[Editor, float]] = {}   # public mode: cookie -> (editor, last used)
+    sessions_lock = threading.Lock()
     server_version = "gph-editor"
 
     # -- plumbing -----------------------------------------------------------
+    @property
+    def editor(self) -> Editor:
+        return self._session_editor if self.public else self.editor_
+
+    def _session(self) -> Editor:
+        """Public mode: the visitor's own editor, created (with a cookie) on first contact."""
+        token = None
+        for part in self.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE and re.fullmatch(r"[A-Za-z0-9_-]{20,64}", v):
+                token = v
+        now = time.time()
+        with self.sessions_lock:
+            for t, (_ed, last) in list(self.sessions.items()):
+                if now - last > PUBLIC_SESSION_IDLE:
+                    del self.sessions[t]
+            if token in self.sessions:
+                ed = self.sessions[token][0]
+            else:
+                while len(self.sessions) >= PUBLIC_MAX_SESSIONS:
+                    del self.sessions[min(self.sessions, key=lambda t: self.sessions[t][1])]
+                token = secrets.token_urlsafe(24)
+                ed = Editor(public=True)
+                ed.screens = self.editor_.screens   # the unit's screen database, if the server has one
+                self._set_cookie = token
+            self.sessions[token] = (ed, now)
+        return ed
+
     def log_request(self, code="-", size="-"):  # quieter log: only failed requests
         if not str(code).startswith(("2", "3")):
             sys.stderr.write(f"{self.command} {self.path} -> {code}\n")
 
-    def _send(self, status: int, body: bytes, ctype: str, cache: bool = False) -> None:
+    def _send(self, status: int, body: bytes, ctype: str, cache: bool = False, extra: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store" if not cache else "max-age=3600")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        if getattr(self, "_set_cookie", None):
+            secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" else ""
+            self.send_header("Set-Cookie", f"{COOKIE}={self._set_cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age={PUBLIC_SESSION_IDLE}{secure}")
+            self._set_cookie = None
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -667,7 +742,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 256 * 1024 * 1024:
+        if n > (PUBLIC_MAX_BODY if self.public else 256 * 1024 * 1024):
             raise ApiError("request too large", 413)
         raw = self.rfile.read(n) if n else b""
         if not raw:
@@ -701,9 +776,13 @@ class Handler(BaseHTTPRequestHandler):
                 if method != "GET":
                     raise ApiError("not found", 404)
                 return self._static(path)
+            if self.public:
+                self._session_editor = self._session()
             for pattern, m, fn in ROUTES:
                 mo = pattern.fullmatch(path)
                 if mo and m == method:
+                    if self.public and fn in PUBLIC_BLOCKED:
+                        raise ApiError("not available in the online version: it never touches the server's disk (upload files, download the result)", 403)
                     return fn(self, query, *mo.groups())
             raise ApiError(f"no route {method} {path}", 404)
         except ApiError as e:
@@ -732,7 +811,7 @@ class Handler(BaseHTTPRequestHandler):
     # -- routes -------------------------------------------------------------
     def r_files(self, q):
         with self.editor.lock:
-            self._json({"files": [of.info() for of in self.editor.files.values()], "cwd": os.getcwd()})
+            self._json({"files": [of.info() for of in self.editor.files.values()], "cwd": None if self.public else os.getcwd()})
 
     def r_settings(self, q):
         with self.editor.lock:
@@ -783,7 +862,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError("bad base64")
         with self.editor.lock:
             of = self.editor.open_bytes(str(d.get("name", "upload.gph")), data)
-            self._json({"opened": [of.info()]})
+            self._json({"opened": [of.info()] if of else [],
+                        "screens": self.editor.screens.summary() if of is None and self.editor.screens else None})
 
     def r_browse(self, q):
         d = self._body()
@@ -804,6 +884,8 @@ class Handler(BaseHTTPRequestHandler):
             if action == "close":
                 del self.editor.files[of.id]
                 return self._json({"closed": of.id})
+            if action in ("revert", "save") and self.public:
+                raise ApiError("not available in the online version: download the file instead", 403)
             if action == "revert":
                 self.editor.revert(of)
             elif action == "undo":
@@ -815,6 +897,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ApiError(f"unknown action {action}", 404)
             self._json({"file": of.info()})
+
+    def r_download(self, q, fid):
+        with self.editor.lock:
+            of = self._of(fid)
+            name, data = self.editor.download(of, q.get("version") or None)
+        self._send(200, data, "application/zip", extra={"Content-Disposition": f'attachment; filename="{name}"'})
 
     def r_items(self, q, fid):
         with self.editor.lock:
@@ -918,6 +1006,7 @@ ROUTES = [
     (re.compile(r"/api/screens/(\d+)"), "GET", Handler.r_screen),
     (re.compile(r"/api/screens/open"), "POST", Handler.r_screens_open),
     (re.compile(r"/api/files/(\d+)/(close|revert|undo|save)"), "POST", Handler.r_file_action),
+    (re.compile(r"/api/files/(\d+)/download\.zip"), "GET", Handler.r_download),
     (re.compile(r"/api/files/(\d+)/items"), "GET", Handler.r_items),
     (re.compile(r"/api/files/(\d+)/item/([A-Z$]{4}\d{4})/(\w+)"), "GET", Handler.r_item_get),
     (re.compile(r"/api/files/(\d+)/item/([A-Z$]{4}\d{4})/(\w+)"), "PUT", Handler.r_item_put),
@@ -933,12 +1022,19 @@ ROUTES = [
 
 
 # ---------------------------------------------------------------------------
-def make_server(paths=(), host: str = "127.0.0.1", port: int = 0, screens: str | None = None) -> ThreadingHTTPServer:
+#: routes that touch the server's disk: refused in public mode
+PUBLIC_BLOCKED = {Handler.r_open, Handler.r_browse, Handler.r_screens_open}
+
+
+def make_server(paths=(), host: str = "127.0.0.1", port: int = 0, screens: str | None = None,
+                public: bool = False) -> ThreadingHTTPServer:
     """Create (but do not run) the server with the given files opened; ``port=0`` picks a free one.
 
     ``screens`` is a GraphicBase.RNEG(.gz) file (the unit's screen database) to load as well.
+    ``public`` is the online mode: one editor per visitor (cookie), no access to the server's
+    disk, downloads instead of saves.
     """
-    editor = Editor()
+    editor = Editor(public=public)
     for p in paths:
         try:
             editor.open_path(p)
@@ -949,7 +1045,7 @@ def make_server(paths=(), host: str = "127.0.0.1", port: int = 0, screens: str |
             editor.open_screens(os.path.expanduser(screens))
         except ApiError as e:
             print(f"skip {screens}: {e}", file=sys.stderr)
-    handler = type("GphHandler", (Handler,), {"editor": editor})
+    handler = type("GphHandler", (Handler,), {"editor_": editor, "public": public, "sessions": {}, "sessions_lock": threading.Lock()})
     try:
         srv = ThreadingHTTPServer((host, port), handler)
     except OSError as e:
@@ -962,13 +1058,15 @@ def make_server(paths=(), host: str = "127.0.0.1", port: int = 0, screens: str |
     return srv
 
 
-def serve(paths=(), host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True, screens: str | None = None) -> None:
-    srv = make_server(paths, host, port, screens)
+def serve(paths=(), host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True, screens: str | None = None,
+          public: bool = False) -> None:
+    srv = make_server(paths, host, port, screens, public)
     url = f"http://{host}:{srv.server_address[1]}/"
     ed = srv.editor  # type: ignore[attr-defined]
     n = len(ed.files)
     scr = f", {len(ed.screens.screens)} screens" if ed.screens else ""
-    print(f"gph editor at {url}  ({n} file{'s' if n != 1 else ''} open{scr})  Ctrl-C stops it", flush=True)
+    mode = "public mode: uploads/downloads only, one session per visitor" if public else "Ctrl-C stops it"
+    print(f"gph editor at {url}  ({n} file{'s' if n != 1 else ''} open{scr})  {mode}", flush=True)
     if open_browser:
         threading.Timer(0.3, webbrowser.open, (url,)).start()
     try:

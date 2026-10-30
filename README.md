@@ -93,6 +93,22 @@ the screen names and owning modules are read from the firmware modules as well. 
 server binds to localhost only and can read and write files on this machine, like any
 local tool; `--port` and `--host` change the address.
 
+### Online version
+
+The same editor runs at [gph-editor.madebybart.nl](https://gph-editor.madebybart.nl) in
+*public mode* (`gph serve --public`, or `GPH_PUBLIC=1`): every visitor gets their own session
+(a cookie; dropped after two hours without activity), files come in by upload (drop them on
+the page) and go out as a zip with the `.gph.bz2` and its `.inf`; the server's disk is never
+read or written.  The `Dockerfile` builds that image:
+
+```bash
+docker build -t gph-editor . && docker run --rm -p 8765:8765 gph-editor
+```
+
+Set `GPH_SCREENS` to a mounted `GraphicBase.RNEG.gz` to offer the Screens view to everyone
+(it is not in the image: the unit's files are PSA/Magneti Marelli content); visitors can also
+upload that file themselves.
+
 ### Editing from the command line
 
 ```bash

@@ -232,6 +232,8 @@ def iter_gph_files(paths: Iterable[str | os.PathLike]) -> Iterator[str]:
             for root, _dirs, files in os.walk(p):
                 for fn in sorted(files):
                     low = fn.lower()
+                    if low.startswith("._"):   # AppleDouble side files on exFAT/SMB volumes
+                        continue
                     if low.endswith(".gph") or low.endswith(".gph.bz2"):
                         yield os.path.join(root, fn)
         else:
