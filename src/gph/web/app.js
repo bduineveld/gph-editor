@@ -7,6 +7,7 @@ const state = {
   route: { f: null, s: null, i: null },
   rows: [],             // rows of the current section
   filter: "",
+  screens: null,        // from /api/screens (the unit's screen database), loaded on demand
 };
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -105,6 +106,14 @@ const GROUP_ORDER = [["texts", "Texts"], ["colors", "Colours"], ["images", "Imag
 function renderSidebar() {
   const nav = $("#sidebar");
   nav.innerHTML = "";
+  const scr = state.settings && state.settings.screens;
+  if (scr) {
+    const active = state.route.s === "screens";
+    nav.append(h("div", { class: "file" },
+      h("div", { class: "file-head", title: scr.path || "" }, h("span", { class: "name" }, "Unit"), h("small", { class: "mono" }, "GraphicBase")),
+      h("div", { class: "sec" + (active ? " active" : ""), onclick: () => go(null, "screens") },
+        h("span", {}, "Screens ", h("small", { class: "mono" }, `${scr.named} named`)), h("span", { class: "n" }, String(scr.count)))));
+  }
   if (!state.files.length) {
     nav.append(h("div", { class: "empty" }, "No files open"));
     return;
@@ -168,6 +177,12 @@ async function closeFile(fid) {
 async function loadSection() {
   const { f, s } = state.route;
   const main = $("#main");
+  if (s === "screens") {
+    if (!state.screens) state.screens = (await act(() => api("GET", "/api/screens"))).screens;
+    state.rows = state.screens;
+    renderScreens();
+    return;
+  }
   if (f == null || !s || !fileById(f)) {
     state.rows = [];
     main.innerHTML = "";
@@ -193,6 +208,7 @@ function matches(row, text) {
 }
 
 function renderSection(keepFocus) {
+  if (state.route.s === "screens") return renderScreens(keepFocus);
   const { f, s } = state.route;
   const file = fileById(f);
   const sec = file.sections.find((x) => x.name === s);
@@ -324,15 +340,121 @@ function renderOther() {
 }
 
 // ---------------------------------------------------------------------------
+// screens of the unit (GraphicBase.RNEG): which widgets form each screen
+function renderScreens(keepFocus) {
+  const main = $("#main");
+  const focused = keepFocus && document.activeElement && document.activeElement.tagName === "INPUT";
+  const caret = focused ? document.activeElement.selectionStart : 0;
+  main.innerHTML = "";
+  const q = state.filter.toLowerCase();
+  const rows = state.rows.filter((r) => !q || String(r.id) === q || (r.name || "").toLowerCase().includes(q) || (r.module || "").toLowerCase().includes(q) || (r.class || "").toLowerCase().includes(q));
+  const tb = h("tbody");
+  for (const r of rows) {
+    tb.append(h("tr", { "data-i": r.id, onclick: () => go(null, "screens", r.id) },
+      h("td", { class: "idx" }, String(r.id)),
+      h("td", {}, r.name ? h("b", {}, r.name) : h("span", { class: "muted" }, "(no name found)"), r.class && r.class !== "C_" + r.name && r.class !== "C_Menu_" + r.name ? h("small", { class: "muted mono" }, " " + r.class) : null),
+      h("td", { class: "mono" }, r.module || ""),
+      h("td", { class: "idx" }, String(r.count)),
+      h("td", { class: "mono muted", style: "font-size:12px" }, r.sections.map((x) => (x.startsWith("type") ? "?" : x.slice(0, 4))).join(" "))));
+  }
+  const info = state.settings && state.settings.screens;
+  const head = viewHead("Screens", info ? info.path.split("/").slice(-3).join("/") : "", null);
+  main.append(head, h("p", { class: "muted", style: "margin:-6px 0 10px" },
+    "Every screen the unit's software can show, with the GEN_common widgets it is built from (names come from the firmware modules; the unit fills in texts and pictures at runtime)."),
+    h("table", { class: "items" }, h("thead", {}, h("tr", {}, h("th", {}, "id"), h("th", {}, "screen"), h("th", {}, "module"), h("th", {}, "widgets"), h("th", {}, "kinds"))), tb));
+  $(".count", head).textContent = `${rows.length} of ${state.rows.length}`;
+  if (focused) { const inp = $(".view-head input"); inp.focus(); inp.setSelectionRange(caret, caret); }
+  highlightActive();
+}
+
+const OBJ_KIND = { BKGD: "background", FXPI: "fixed picture", VRPI: "variable picture", FXTX: "fixed text", ITXT: "indexed text", DTXT: "dynamic text",
+  FBTN: "button", CBTN: "check button", DBTN: "dynamic button", DCBT: "dynamic check button", ICBT: "indexed check button", MENU: "menu", IMEN: "indexed menu",
+  LIST: "list", MCTX: "multiple choice", EDTX: "edited text", EDTB: "keyboard", VWTX: "view text", FBAR: "bar", SEBR: "selectable bar", CRZO: "crossroad zoom" };
+
+async function detailScreen(d, id) {
+  let sc;
+  try { sc = await act(() => api("GET", `/api/screens/${id}`)); }
+  catch (e) { d.append(h("p", { class: "problem" }, e.message)); return; }
+  const close = h("button", { class: "small", style: "float:right", onclick: () => go(null, "screens") }, "✕");
+  d.append(close, h("h2", {}, sc.name || `screen ${sc.id}`),
+    h("p", { class: "muted mono", style: "font-size:12px;margin:0 0 8px" }, `screen ${sc.id}`, sc.module ? ` · module ${sc.module}` : "", sc.class ? ` · ${sc.class}` : "", ` · flags 0x${sc.flags.toString(16)}`));
+  // one stage with every widget at its own position
+  const items = [];
+  const drawn = sc.objects.filter((o) => o.fields);
+  for (const o of drawn) {
+    const its = stageItems(o.section, o.fields, o.resolved || {});
+    // menus and indexed texts know their lines/texts only through the screen's list: use them
+    if (o.list_texts && o.list_texts.length) {
+      const texts = its.filter((it) => it.type === "text");
+      texts.forEach((it, n) => { const t = o.list_texts[n] != null ? o.list_texts[n] : o.list_texts[0]; if (t != null && it.placeholder) { it.text = t; it.placeholder = false; } });
+    }
+    for (const it of its) { it.obj = o.obj; it.label = `${o.section.slice(0, 4)} ${hex4(o.index)} ${it.label}`; items.push(it); }
+  }
+  d.append(screenStage(items, sc));
+  // the widgets
+  const tb = h("tbody");
+  for (const o of sc.objects) {
+    const sec = o.section ? o.section.slice(0, 4) : null;
+    const fl = o.fields || {};
+    const texts = (o.list_texts || []).filter((t) => t != null);
+    const res = o.resolved || {};
+    const own = res.text_index && res.text_index.texts ? res.text_index.texts.filter(Boolean) : [];
+    const what = o.section ? h("span", { class: "link", onclick: () => go(o.file, o.section, o.index) }, `${sec} ${hex4(o.index)}`) : h("span", { class: "muted" }, `type ${o.type}`);
+    tb.append(h("tr", { "data-obj": o.obj, onmouseenter: () => hilite(d, o.obj, true), onmouseleave: () => hilite(d, o.obj, false) },
+      h("td", { class: "mono" }, what, o.missing ? h("span", { class: "problem" }, " empty slot") : null),
+      h("td", {}, (sec && OBJ_KIND[sec]) || o.kind || "", o.probable ? h("small", { class: "muted" }, " (section guessed)") : null, o.fixed ? h("small", { class: "muted" }, " · fixed part") : null),
+      h("td", { class: "idx" }, fl.x != null ? `${fl.x},${fl.y}` : ""),
+      h("td", { class: "idx" }, o.fixed ? "" : String(o.obj)),
+      h("td", { style: "font-size:12.5px" }, texts.length ? h("span", { title: o.list }, texts.slice(0, 8).map((t) => String(t).replace(/\r/g, " ")).join(" · "), texts.length > 8 ? ` … (${texts.length})` : "")
+        : own.length ? h("span", {}, own.join(" / ")) : o.list ? h("small", { class: "muted mono" }, o.list.replace(/^List_GDO_/, "")) : "")));
+  }
+  d.append(h("h3", {}, `${sc.objects.length} widgets`),
+    h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y"), h("th", {}, "object id"), h("th", {}, "texts / list"))), tb),
+    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the screen. Which items a list or menu really shows depends on the unit (the lists above are what the firmware attaches to this screen)."));
+}
+
+function hilite(root, obj, on) {
+  for (const el of root.querySelectorAll(`.stage [data-obj="${obj}"]`)) el.classList.toggle("hl", on);
+}
+
+function screenStage(items, sc) {
+  const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
+  const bg = state.settings && state.settings.background;
+  const wrap = h("div", { class: "stage-wrap" });
+  const stage = h("div", { class: "stage", style: `width:${scr.width}px;height:${scr.height}px` });
+  const showBg = h("input", { type: "checkbox", checked: state.stageBg !== false, title: "the theme's first background under everything" });
+  const draw = () => {
+    stage.innerHTML = "";
+    const hasOwnBg = items.some((it) => it.type === "img" && it.x === 0 && it.y === 0 && it.w >= scr.width && it.h >= scr.height);
+    if (showBg.checked && bg && !hasOwnBg) stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + (state.rev[bg.file] || 0), alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
+    paintItems(stage, items, 0, 0, bg ? state.rev[bg.file] || 0 : 0);
+  };
+  showBg.onchange = () => { state.stageBg = showBg.checked; draw(); };
+  draw();
+  wrap.append(stage);
+  let scale = 1;
+  const fit = () => { scale = Math.min(1, (wrap.clientWidth || 340) / scr.width); stage.style.transform = `scale(${scale})`; wrap.style.height = Math.round(scr.height * scale) + "px"; };
+  requestAnimationFrame(fit);
+  window.addEventListener("resize", fit);
+  const big = h("button", { class: "small", onclick: () => { const clone = stage.cloneNode(true); clone.style.transform = ""; modal(h("div", {}, h("h2", {}, `${sc.name || "screen " + sc.id} (1:1)`), h("div", { class: "stage-wrap big" }, clone), h("div", { class: "modal-actions" }, h("button", { onclick: closeModal }, "Close")))); } }, "1:1");
+  const sample = items.some((it) => it.type === "text" && it.placeholder)
+    ? h("input", { type: "text", value: state.sampleText || SAMPLE_TEXT, title: "sample text for texts the unit fills in at runtime", style: "width:150px",
+        oninput: (e) => { state.sampleText = e.target.value; draw(); } }) : null;
+  return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
+    h("label", {}, h("span", {}, showBg, " theme background")), sample, big), wrap);
+}
+
+// ---------------------------------------------------------------------------
 // detail pane
 function hideDetail() { const d = $("#detail"); d.hidden = true; d.innerHTML = ""; }
 
 async function showDetail() {
   const { f, s, i } = state.route;
+  const d = $("#detail");
+  if (s === "screens") { d.hidden = false; d.innerHTML = ""; return detailScreen(d, i); }
   const file = fileById(f);
   if (!file) return;
   const sec = file.sections.find((x) => x.name === s);
-  const d = $("#detail");
   d.hidden = false;
   d.innerHTML = "";
   const close = h("button", { class: "small", style: "float:right", onclick: () => go(f, s) }, "✕");
@@ -526,6 +648,11 @@ function detailOther(d, f, s, i, item) {
     .filter((k) => fl[k] != null).map((k) => `${k}=${fl[k]}`).join("  ");
   if (geo) d.append(h("p", { class: "mono muted", style: "font-size:12px" }, geo));
   if (Object.keys(r).length) d.append(h("h3", {}, "References"), resolvedBlock(r));
+  if (item.screens && item.screens.length) {
+    d.append(h("h3", {}, `On ${item.screens.length} screen${item.screens.length === 1 ? "" : "s"}`),
+      h("p", { style: "font-size:12.5px" }, ...item.screens.slice(0, 60).map((sc) => h("span", { class: "link", style: "margin-right:10px;white-space:nowrap", onclick: () => go(null, "screens", sc.id) }, sc.name || `screen ${sc.id}`)),
+        item.screens.length > 60 ? h("span", { class: "muted" }, `… and ${item.screens.length - 60} more`) : null));
+  } else if (state.settings && state.settings.screens && STAGED.has(s.slice(0, 4))) d.append(h("p", { class: "muted", style: "font-size:12px" }, "Not placed on any screen by the firmware's screen database."));
   if (item.problems.length) d.append(h("p", { class: "problem" }, item.problems.join("; ")));
   d.append(rawJson(f, s, i, item, false));
 }
@@ -658,6 +785,26 @@ function stageItems(section, f, r, stateNo = 0) {
   return items;
 }
 
+/** Draw stage items (from stageItems) into a stage element, shifted by ox/oy screen pixels. */
+function paintItems(stage, items, ox, oy, rev) {
+  for (const it of items) {
+    const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px`;
+    const attrs = it.obj != null ? { "data-obj": it.obj } : {};
+    if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + "&v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));
+    else if (it.type === "text") {
+      const txt = it.placeholder ? (state.sampleText || SAMPLE_TEXT) : it.text;
+      const just = ["flex-start", "center", "flex-end"][it.align] || "flex-start";
+      const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : ""}`,
+        style: `${st};justify-content:${just};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px`, ...attrs });
+      if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
+        src: `/api/render.png?font=${it.font}&text=${encodeURIComponent(txt)}&color=${it.hex}&interline=${it.interline}` }));
+      else box.append(txt);
+      stage.append(box);
+    }
+    else stage.append(h("div", { class: "stage-box", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }, h("span", {}, it.label)));
+  }
+}
+
 function stageBlock(fid, section, index, fields, resolved) {
   const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
   const bg = state.settings && state.settings.background;
@@ -682,22 +829,7 @@ function stageBlock(fid, section, index, fields, resolved) {
     if (showBg.checked && bg && !(section.startsWith("BKGD") && fields.x === 0 && fields.y === 0 && resolved.image && resolved.image.index === bg.index)) {
       stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + (state.rev[bg.file] || 0), alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
     }
-    const ox = moved ? moved.dx : 0, oy = moved ? moved.dy : 0;
-    for (const it of items) {
-      const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px`;
-      if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + "&v=" + (state.rev[bg ? bg.file : 0] || 0), alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }));
-      else if (it.type === "text") {
-        const txt = it.placeholder ? (state.sampleText || SAMPLE_TEXT) : it.text;
-        const just = ["flex-start", "center", "flex-end"][it.align] || "flex-start";
-        const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : ""}`,
-          style: `${st};justify-content:${just};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px` });
-        if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
-          src: `/api/render.png?font=${it.font}&text=${encodeURIComponent(txt)}&color=${it.hex}&interline=${it.interline}` }));
-        else box.append(txt);
-        stage.append(box);
-      }
-      else stage.append(h("div", { class: "stage-box", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st }, h("span", {}, it.label)));
-    }
+    paintItems(stage, items, moved ? moved.dx : 0, moved ? moved.dy : 0, state.rev[bg ? bg.file : 0] || 0);
   };
   showBg.onchange = () => { state.stageBg = showBg.checked; draw(); };
   if (stateSel) stateSel.onchange = () => { items = stageItems(section, fields, resolved, +stateSel.value); draw(); };
@@ -766,8 +898,10 @@ async function openDialog(startPath) {
     const r = await act(() => api("POST", "/api/open", { path: p }));
     for (const f of r.opened) updateFile(f);
     closeModal();
+    if (r.screens) { state.screens = null; await loadSettings(); renderSidebar(); toast(`Screen database loaded: ${r.screens.count} screens`); }
     if (r.opened.length) { toast(`Opened ${r.opened.length} file${r.opened.length > 1 ? "s" : ""}`); const f = r.opened[0]; go(f.id, f.sections.find((s) => s.used)?.name); }
     else if (r.already_open.length) { const f = r.already_open[0]; go(f.id, f.sections.find((s) => s.used)?.name); toast("Already open", "warn"); }
+    else if (r.screens) go(null, "screens");
     else toast("No GPH files found there", "warn");
   };
   const browse = async (p) => {
@@ -783,7 +917,8 @@ async function openDialog(startPath) {
   const up = h("input", { type: "file", accept: ".gph,.bz2", multiple: true, onchange: () => uploadFiles(up.files) });
   modal(h("div", {},
     h("h2", {}, "Open"),
-    h("p", { class: "muted" }, "Pick a file, or open a folder (all GPH files below it, e.g. the whole Graphics folder: that lets the editor resolve links between files)."),
+    h("p", { class: "muted" }, "Pick a file, or open a folder (all GPH files below it, e.g. the whole Graphics folder: that lets the editor resolve links between files). ",
+      "A GraphicBase.RNEG.gz (Data_Base/Graphics of the unit's software update) adds the screens view."),
     h("div", { class: "pathbar" }, pathIn, h("button", { onclick: () => browse(pathIn.value) }, "Go"), h("button", { class: "primary", onclick: () => openPath(pathIn.value) }, "Open this folder / file")),
     list,
     h("h3", {}, "Or upload"), h("div", { class: "row" }, up, h("small", {}, "files sent by the browser can only be saved by typing an output path")),

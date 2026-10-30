@@ -155,6 +155,10 @@ ol.reflist li::marker { color: var(--fg2); font-family: var(--mono); font-size: 
 .stage-box span { background: rgba(0,0,0,.5); padding: 0 3px; }
 .stage.movable { cursor: grab; }
 .stage.movable img, .stage.movable div { pointer-events: none; }
+.stage .hl { outline: 3px solid var(--accent) !important; z-index: 5; }
+table.screen-objects td { font-size: 13px; }
+table.screen-objects tr { cursor: default; }
+table.screen-objects tr:hover td { background: var(--bg3); }
 td.pics { white-space: nowrap; width: 1%; }
 td.pics .thumb.mini { margin-right: 4px; cursor: pointer; width: 72px; height: 44px; }
 td.pics .thumb.mini:hover { outline: 2px solid var(--accent); }

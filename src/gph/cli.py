@@ -406,7 +406,7 @@ def cmd_preview(args):
 # ---------------------------------------------------------------------------
 def cmd_serve(args):
     from .server import serve
-    serve(args.paths, host=args.host, port=args.port, open_browser=not args.no_browser)
+    serve(args.paths, host=args.host, port=args.port, open_browser=not args.no_browser, screens=args.screens)
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +542,8 @@ def main(argv=None):
                    help="TCP port (default: $PORT or 8765)")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--no-browser", action="store_true", help="do not open a browser window")
+    s.add_argument("--screens", metavar="GRAPHICBASE", help="the unit's screen database (Data_Base/Graphics/GraphicBase.RNEG.gz "
+                   "of the software update) to show complete screens; found automatically when it sits under an opened folder")
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("inf", help="verify or (re)write the .inf side-car of data files")

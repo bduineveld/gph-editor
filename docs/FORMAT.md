@@ -303,7 +303,63 @@ verify because the text checksum covers whatever bytes are there.
 Implementation: [`src/gph/inf.py`](../src/gph/inf.py) (`crc16`, `InfFile.update`,
 `write_inf_for`).
 
-## 8. Open questions
+## 8. Screens: the firmware's `GraphicBase.RNEG`
+
+The GPH files hold widgets, not screens.  Which widgets are shown together is decided by
+the unit's software, and that part is data as well: `Data_Base/Graphics/GraphicBase.RNEG.gz`
+on the unit (and on the software update CD, e.g. RNEG 2.80).  It is a PowerPC ELF
+relocatable (VxWorks 5.5, gcc 2.96) without code, compressed like every firmware module as
+**one prefix byte `0x08` followed by a zlib stream** (`USIZE` in the `.inf` is the
+decompressed size).  Its `.data` section holds, all big-endian 32-bit:
+
+| symbol | content |
+|---|---|
+| `pIndexOfScreenDataBase` | one 12-byte entry per screen: `screen id, flags, pointer` → `pDataBaseNNNNNN` (615 screens in 2.80) |
+| `pDataBaseNNNNNN` | the objects of screen `NNNNNN`: 12-byte entries `object id, reference, pointer`, zero-terminated |
+| `List_GDO_<kind>_<screen>…` | a list attached to an object: 16-bit count, then 16-bit values |
+| `GOL_NIOTrans`, `GOL_IIOMin`, `GOL_*NbIndex` | small tables of the graphic object layer (not used here) |
+
+The **reference** is `type << 24 | sub << 16 | index`; `index` is the slot in the section
+of `GEN_common` that `type` selects.  The mapping was derived from the factory database (for
+every type all referenced indexes exist in exactly one section and the highest one matches
+the section size):
+
+| type | section | | type | section |
+|---|---|---|---|---|
+| 1 | `FBAR2000` | | 16 | `ITXT2000` |
+| 2 | `FBTN2006` | | 18 | `LIST2001` |
+| 3 | `CBTN2006` | | 19 | `MCTX2006` |
+| 4 | `DBTN2001` | | 21 | `CRZO2002` |
+| 5 | `DCBT2000` | | 23 | `SEBR2000` |
+| 8 | `EDTX2000` (probable) | | 24 | `VRPI2000` |
+| 9 | `EDTB2006` (probable) | | 25 | `VWTX2000` |
+| 10 | `BKGD2000` | | 28 | `MENU2006` (sub 19 = the menu, 25 = a menu item) |
+| 11 | `FXPI2000` | | 34 | `DTXT2000` (37 probably too) |
+| 12 | `FXTX2006` | | 38 | `ICBT2000` (probable) |
+| 15 | `IMEN2000` | | 7, 20, 26, 27, 29, 31, 33, 43 | no GPH item (map window, video, OSD …) |
+
+The first entries of a screen carry the screen id itself as object id: background, fixed
+texts and fixed pictures.  The others carry the **object ids the MMI code uses**
+(`C_COL_Base::GetObject(180004)`), decimal `kind * 10000 + n`.  List values are `TXIN2000`
+indexes for texts (the month names of the clock screen, the lines of a menu) and
+`IMAG2000` indexes for variable pictures.
+
+Names are not stored.  Most follow from the `List_GDO` symbol names
+(`List_GDO_it_1_CLOCK_F3_Z5_2` → screen `CLOCK_F3_Z5_2`; the zone suffix `Z1_0`, `Z0_3`,
+`Z5_2`, `Full_1` tells where on the display it goes); the rest come from the MMI modules in
+`Application/MMI/*/mmi_*.gz` (same compression, ELF with symbols): every menu screen is a
+C++ class `C_Menu_<NAME>` whose constructor loads the screen id into `r7` (`li r7, 39`)
+right before calling `C_MENU_STATE::C_MENU_STATE(zone, kbd, int, screen)`, and the
+full-screen "F" screens of the media sources have `SCREEN_<NAME>_SCREEN_SET` tables
+(16-byte entries `screen id, n, 0, pointer to SCREEN_<NAME>_FIELDS_TABLE`).  Check: screen
+39 is `C_Menu_MENU_H1_Z1_0`, whose code handles four menu items (Diagnosis, Services
+status, Speech reco, nav simulation), and its database entry is background 4, fixed text
+350, a 250×6 line and `MENU2006[1]` with four items.
+
+Implementation: [`src/gph/screens.py`](../src/gph/screens.py); the web UI shows the
+screens when a `GraphicBase.RNEG.gz` is opened (or sits under the opened folder).
+
+## 9. Open questions
 
 * Meaning of the stamp bytes (§2.1) and whether the unit validates them.
 * `FBAR2000` bytes 56..59 (`FF FF FF FF`) and the element type of its third (always null) table.

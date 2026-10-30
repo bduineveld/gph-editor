@@ -27,6 +27,10 @@ API (all JSON unless noted)::
     GET  /api/settings                           theme/language in use, screen size, background
     GET  /api/render.png?font=N&text=..&color=.. text drawn with the unit's bitmap font (scaled)
     POST /api/settings    {"theme": "HA01", "language": "DE"}
+    GET  /api/screens                            screens of the unit (needs GraphicBase.RNEG, see gph.screens)
+    GET  /api/screens/ID                         one screen with its widgets, decoded and resolved
+    POST /api/screens/open   {"path": ...}       load a GraphicBase.RNEG(.gz) file (``/api/open`` does it
+                                                 too when it finds one under the folder)
 """
 
 from __future__ import annotations
@@ -58,6 +62,7 @@ from .edit import (default_filename, get_fields, load_frames, set_color, set_ima
 from .encode import EncodeError
 from .inf import InfFile
 from .schema import IMAG_FLAGS, IMAG_STRETCH, SECTION_DESCRIPTIONS, TXCO_DESCRIPTIONS
+from .screens import TEXT_LIST_SECTIONS, ScreenDatabase, ScreenError, find_graphic_base, find_mmi_folder
 from .workspace import Workspace
 
 MAX_UNDO = 50
@@ -140,14 +145,28 @@ class Editor:
         self.lock = threading.RLock()
         self.theme: str | None = None      # "HA00" ...; None = first theme found
         self.language: str | None = None   # "DE" ...; None = first language found
+        self.screens: ScreenDatabase | None = None   # the unit's screen database, when a GraphicBase was opened
 
     # -- files --------------------------------------------------------------
     def open_path(self, path: str) -> tuple[list[OpenFile], list[OpenFile]]:
-        """Open a file or every GPH file under a folder; returns (opened, already open)."""
+        """Open a file or every GPH file under a folder; returns (opened, already open).
+
+        A ``GraphicBase.RNEG(.gz)`` file, given directly or found under the folder, is loaded
+        as the screen database (see :attr:`screens`).
+        """
         path = os.path.expanduser(path)
         if not os.path.exists(path):
             raise ApiError(f"{path}: not found", 404)
+        if os.path.isfile(path) and os.path.basename(path).lower().startswith("graphicbase."):
+            self.open_screens(path)
+            return [], []
         opened, known = [], []
+        gb = find_graphic_base(path) if os.path.isdir(path) else None
+        if gb and (self.screens is None or self.screens.path != gb):
+            try:
+                self.open_screens(gb)
+            except ApiError as e:
+                print(f"skip {gb}: {e}", file=sys.stderr)
         for p in sorted(iter_gph_files([path]), key=str.lower):
             p = os.path.abspath(p)
             dup = next((of for of in self.files.values() if of.path == p), None)
@@ -164,6 +183,19 @@ class Editor:
         if not opened and not known and not os.path.isdir(path):
             raise ApiError(f"{path}: not a GPH file")
         return opened, known
+
+    def open_screens(self, path: str) -> ScreenDatabase:
+        """Load a GraphicBase.RNEG(.gz) and, when the firmware's ``Application/MMI`` folder sits
+        next to it, the screen names from the MMI modules."""
+        try:
+            db = ScreenDatabase.load(path)
+        except (ScreenError, OSError, ValueError) as e:
+            raise ApiError(f"{path}: {e}")
+        mmi = find_mmi_folder(path)
+        if mmi:
+            db.enrich_from_modules(mmi)
+        self.screens = db
+        return db
 
     def open_bytes(self, name: str, data: bytes) -> OpenFile:
         import bz2
@@ -212,7 +244,8 @@ class Editor:
         theme = ws.theme_gen.variant.strip() if ws.theme_gen else (ws.theme_lrg.variant.strip() if ws.theme_lrg else None)
         lang = ws.language.variant.strip() if ws.language else None
         d = {"theme": theme, "language": lang, "themes": self.themes(), "languages": self.languages(),
-             "screen": {"width": SCREEN[0], "height": SCREEN[1]}, "background": None}
+             "screen": {"width": SCREEN[0], "height": SCREEN[1]}, "background": None,
+             "screens": self.screens.summary() if self.screens else None}
         bg = self._resolve_link(ws, "image", ws.common and self._first_background(ws.common))
         if bg and bg.get("kind") == "image":
             d["background"] = bg
@@ -403,6 +436,41 @@ class Editor:
             d["format"] = textures.texture_type_name(it.fields["internal_format"])
         if section.startswith("IMAG"):
             d["used_by"] = self.where_used(of, index)
+        if self.screens and of.file is ws.common:
+            d["screens"] = [{"id": sid, "name": self.screens.screens[sid].name} for sid in self.screens.uses(section, index)]
+        return d
+
+    # -- screens of the unit -------------------------------------------------
+    def screen_list(self) -> list[dict]:
+        if self.screens is None:
+            raise ApiError("no screen database open (open a GraphicBase.RNEG.gz of the unit's software)", 404)
+        return [sc.to_json(objects=False) for _sid, sc in sorted(self.screens.screens.items())]
+
+    def screen_detail(self, sid: int) -> dict:
+        """One screen with every widget decoded (fields + resolved links) so the UI can draw it."""
+        if self.screens is None:
+            raise ApiError("no screen database open", 404)
+        sc = self.screens.screens.get(sid)
+        if sc is None:
+            raise ApiError(f"no screen {sid}", 404)
+        ws = self.workspace()
+        of = self._of_for(ws.common)
+        objects = []
+        for o in sc.objects:
+            j = o.to_json()
+            if o.section and of is not None:
+                it = ws.item(ws.common, o.section, o.index)
+                if it is None:
+                    j["missing"] = True
+                else:
+                    j.update(file=of.id, fields=it.to_json(), resolved=self.resolve_fields(ws, o.section, it.fields))
+            if o.values and o.section in TEXT_LIST_SECTIONS:
+                j["list_texts"] = [(ws.text_index(Link("GEN ", v)) or [None])[0] for v in o.values]
+            elif o.values and o.section == "VRPI2000":
+                j["list_images"] = [self._resolve_link(ws, "image", Link("GEN ", v)) for v in o.values]
+            objects.append(j)
+        d = sc.to_json(objects=False)
+        d.update(objects=objects, common_file=of.id if of else None)
         return d
 
     def where_used(self, of: OpenFile, image_index: int) -> list[str]:
@@ -566,7 +634,7 @@ def browse(path: str) -> dict:
         full = os.path.join(path, n)
         if os.path.isdir(full):
             dirs.append(n)
-        elif n.lower().endswith((".gph", ".gph.bz2")):
+        elif n.lower().endswith((".gph", ".gph.bz2")) or n.lower().startswith("graphicbase."):
             files.append({"name": n, "size": os.path.getsize(full)})
     return {"path": path, "parent": os.path.dirname(path) if os.path.dirname(path) != path else None,
             "dirs": dirs, "files": files}
@@ -688,8 +756,24 @@ class Handler(BaseHTTPRequestHandler):
     def r_open(self, q):
         d = self._body()
         with self.editor.lock:
+            before = self.editor.screens
             opened, known = self.editor.open_path(str(d.get("path", "")))
-            self._json({"opened": [of.info() for of in opened], "already_open": [of.info() for of in known]})
+            self._json({"opened": [of.info() for of in opened], "already_open": [of.info() for of in known],
+                        "screens": self.editor.screens.summary() if self.editor.screens is not None and self.editor.screens is not before else None})
+
+    def r_screens(self, q):
+        with self.editor.lock:
+            self._json({"screens": self.editor.screen_list(), "info": self.editor.screens.summary()})
+
+    def r_screen(self, q, sid):
+        with self.editor.lock:
+            self._json(self.editor.screen_detail(int(sid)))
+
+    def r_screens_open(self, q):
+        d = self._body()
+        with self.editor.lock:
+            db = self.editor.open_screens(os.path.expanduser(str(d.get("path", ""))))
+            self._json({"screens": db.summary()})
 
     def r_upload(self, q):
         d = self._body()
@@ -830,6 +914,9 @@ ROUTES = [
     (re.compile(r"/api/upload"), "POST", Handler.r_upload),
     (re.compile(r"/api/browse"), "POST", Handler.r_browse),
     (re.compile(r"/api/preview"), "POST", Handler.r_preview),
+    (re.compile(r"/api/screens"), "GET", Handler.r_screens),
+    (re.compile(r"/api/screens/(\d+)"), "GET", Handler.r_screen),
+    (re.compile(r"/api/screens/open"), "POST", Handler.r_screens_open),
     (re.compile(r"/api/files/(\d+)/(close|revert|undo|save)"), "POST", Handler.r_file_action),
     (re.compile(r"/api/files/(\d+)/items"), "GET", Handler.r_items),
     (re.compile(r"/api/files/(\d+)/item/([A-Z$]{4}\d{4})/(\w+)"), "GET", Handler.r_item_get),
@@ -846,14 +933,22 @@ ROUTES = [
 
 
 # ---------------------------------------------------------------------------
-def make_server(paths=(), host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
-    """Create (but do not run) the server with the given files opened; ``port=0`` picks a free one."""
+def make_server(paths=(), host: str = "127.0.0.1", port: int = 0, screens: str | None = None) -> ThreadingHTTPServer:
+    """Create (but do not run) the server with the given files opened; ``port=0`` picks a free one.
+
+    ``screens`` is a GraphicBase.RNEG(.gz) file (the unit's screen database) to load as well.
+    """
     editor = Editor()
     for p in paths:
         try:
             editor.open_path(p)
         except ApiError as e:
             print(f"skip {p}: {e}", file=sys.stderr)
+    if screens:
+        try:
+            editor.open_screens(os.path.expanduser(screens))
+        except ApiError as e:
+            print(f"skip {screens}: {e}", file=sys.stderr)
     handler = type("GphHandler", (Handler,), {"editor": editor})
     try:
         srv = ThreadingHTTPServer((host, port), handler)
@@ -867,11 +962,13 @@ def make_server(paths=(), host: str = "127.0.0.1", port: int = 0) -> ThreadingHT
     return srv
 
 
-def serve(paths=(), host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
-    srv = make_server(paths, host, port)
+def serve(paths=(), host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True, screens: str | None = None) -> None:
+    srv = make_server(paths, host, port, screens)
     url = f"http://{host}:{srv.server_address[1]}/"
-    n = len(srv.editor.files)  # type: ignore[attr-defined]
-    print(f"gph editor at {url}  ({n} file{'s' if n != 1 else ''} open)  Ctrl-C stops it", flush=True)
+    ed = srv.editor  # type: ignore[attr-defined]
+    n = len(ed.files)
+    scr = f", {len(ed.screens.screens)} screens" if ed.screens else ""
+    print(f"gph editor at {url}  ({n} file{'s' if n != 1 else ''} open{scr})  Ctrl-C stops it", flush=True)
     if open_browser:
         threading.Timer(0.3, webbrowser.open, (url,)).start()
     try:

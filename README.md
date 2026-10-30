@@ -30,6 +30,9 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
 * **Web UI**: `gph serve` opens a local editor in the browser: browse every section, edit
   texts and colours, replace images and textures (with a quality preview), change any
   widget field as JSON, undo, and save packages.
+* **Screens**: the firmware's screen database (`GraphicBase.RNEG.gz` from the unit or its
+  software update) is decoded, so the editor can show the 615 screens of the unit with every
+  widget in place and tell for each widget on which screens it appears (`docs/FORMAT.md` §8).
 * Not yet tried on a real unit.
 
 ## Install
@@ -74,9 +77,21 @@ come alive: every link is resolved through the chosen theme and language (select
 the top bar), so a button shows its font, its text, its four state images and its text
 colours, each one a click away, and the item is drawn at its `x`/`y` on an 800×480 stage
 over the theme's background (menus with their items, the keyboard with its keys, lists
-with their visible area).  The stage is a reading aid, not an emulator: it places what
-the file says, it does not know which widgets the firmware shows together.  The server binds to localhost only and can read and
-write files on this machine, like any local tool; `--port` and `--host` change the address.
+with their visible area).  On its own the stage places what the file says; which widgets
+the firmware shows together comes from the unit's screen database:
+
+```bash
+gph serve Graphics/ --screens RT6-Soft/Data_Base/Graphics/GraphicBase.RNEG.gz
+```
+
+(or open that file, or a folder containing it, with *Open…*).  A *Screens* entry then lists
+every screen of the unit by name and draws it complete: background, fixed texts and
+pictures, buttons, menus with the lines the firmware attaches to them, texts with their
+font and colour.  Each widget links to its item, and each item says on which screens it
+appears.  When the software update's `Application/MMI` folder sits next to the database,
+the screen names and owning modules are read from the firmware modules as well.  The
+server binds to localhost only and can read and write files on this machine, like any
+local tool; `--port` and `--host` change the address.
 
 ### Editing from the command line
 

@@ -20,3 +20,9 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Firmware data of the unit (also PSA/Magneti Marelli content): analyse locally, never commit
+tools/firmware/*.elf
+tools/firmware/*.bin
+tools/firmware/*.gz
+tools/firmware/screens.json
