@@ -10,7 +10,8 @@ const state = {
   screens: null,        // from /api/screens (the unit's screen database), loaded on demand
   zoneFilter: "",       // screens list: role or zone id to show
   layers: {},           // screen id -> ids of the screens shown around it on the display
-  picks: {},            // screen id -> {object id: which picture of a variable picture is shown}
+  picks: {},            // screen id -> {object position: which picture of a variable picture is shown}
+  hidden: {},           // screen id -> Set of object positions taken off the display
 };
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -432,11 +433,25 @@ function pickOf(sid, n, list) {
   return k < 0 ? 0 : k;
 }
 
+/** The text of a list to show: the first with something to read (an empty first entry is the "off" state). */
+function pickText(list) {
+  const t = (list || []).find((x) => x != null && x.trim());
+  return t != null ? t : (list || []).find((x) => x != null) ?? null;
+}
+
 /** Text for one entry of a variable picture's list. */
 function listImageLabel(im, k) {
   if (!im || im.kind !== "image") return `${k + 1}: empty slot`;
   return `${k + 1}: ${im.module} ${hex4(im.index)} · ` + (im.blank ? "nothing (transparent)" : `${im.width}×${im.height}`)
     + (im.frames > 1 ? ` · animation, ${im.frames} pictures × ${im.time} ms` : "");
+}
+
+/** Positions of the buttons that belong to the radio group at position `n` of a screen's objects:
+ *  the check buttons that follow it, up to the next group or other widget. */
+function groupMembers(objects, n) {
+  const out = [];
+  for (let k = n + 1; k < objects.length && [3, 5, 38].includes(objects[k].type); k++) out.push(k);
+  return out;
 }
 
 /** Stage items of one screen, positioned inside its zone (the background sits at 0,0).
@@ -445,20 +460,24 @@ function layerItems(sc, onPick) {
   const items = [];
   const [zx, zy, , zh] = sc.rect;
   const picks = (state.picks[sc.id] = state.picks[sc.id] || {});
+  const hidden = state.hidden[sc.id];
   for (const [n, o] of sc.objects.entries()) {
-    if (!o.fields) continue;
+    if (!o.fields || (hidden && hidden.has(n))) continue;
     const extra = { zoneH: zh };
-    if (o.lines) extra.lines = o.lines.map((ln) => (ln.texts || []).find((t) => t != null) || null);
+    if (o.lines) extra.lines = o.lines.map((ln) => pickText(ln.texts));
     if (o.list_images && o.list_images.length) { extra.images = o.list_images; extra.pick = pickOf(sc.id, n, o.list_images); }
     const its = stageItems(o.section, o.fields, o.resolved || {}, 0, extra);
     // indexed texts and buttons know their texts only through the screen's list: use the first
     if (!o.lines && o.list_texts && o.list_texts.length) {
       const texts = its.filter((it) => it.type === "text");
-      texts.forEach((it, n) => { const t = o.list_texts[n] != null ? o.list_texts[n] : o.list_texts[0]; if (t != null && it.placeholder) { it.text = t; it.placeholder = false; } });
+      texts.forEach((it, n) => { const t = texts.length > 1 && o.list_texts[n] != null ? o.list_texts[n] : pickText(o.list_texts); if (t != null && (it.placeholder || it.empty)) { it.text = t; it.placeholder = it.empty = false; } });
     }
     const abs = o.section === "BKGD2000";   // the background is the one widget with a display position
     for (const it of its) {
       if (abs) { it.x -= zx; it.y -= zy; }
+      // a text box may stick out of its zone (the date in the top band ends at x=120 and is 233 wide):
+      // the sample text is chosen for the part inside
+      if (it.type === "text") it.vis = Math.max(0, Math.min(it.x + it.w, sc.rect[2]) - Math.max(it.x, 0));
       it.obj = o.obj; it.label = `${o.section.slice(0, 4)} ${hex4(o.index)} ${it.label}`;
       if (it.cycle) it.onclick = () => { picks[n] = (extra.pick + 1) % o.list_images.length; (onPick || showDetail)(); };
       items.push(it);
@@ -504,12 +523,27 @@ async function detailScreen(d, id) {
     syncs.push(sync); sync();
     return h("div", { class: "vp-pick" }, h("div", {}, sel, o.list ? h("small", { class: "muted mono", title: "name of this list in the firmware" }, " " + o.list.replace(/^List_GDO_/, "")) : null), thumbs);
   };
-  // the widgets
+  // the widgets; the box in front takes one off the display above (the unit hides widgets while it runs)
+  const hidden = (state.hidden[sc.id] = state.hidden[sc.id] || new Set());
+  const showBox = (n, o) => {
+    const group = o.type === 20 ? groupMembers(sc.objects, n) : null;
+    if (o.line || (group ? !group.length : !o.fields)) return null;
+    const mine = group || [n];
+    const box = h("input", { type: "checkbox", title: group ? "show this group of buttons on the display above" : "show this widget on the display above",
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => { for (const k of mine) e.target.checked ? hidden.delete(k) : hidden.add(k); repaint(); } });
+    syncs.push(() => {
+      const off = mine.filter((k) => hidden.has(k)).length;
+      box.checked = off < mine.length; box.indeterminate = off > 0 && off < mine.length;
+      const tr = box.closest("tr"); if (tr) tr.classList.toggle("off", !group && off > 0);
+    });
+    return box;
+  };
   const tb = h("tbody");
   for (const [n, o] of sc.objects.entries()) {
     const sec = o.section ? o.section.slice(0, 4) : null;
     const fl = o.fields || {};
-    const texts = (o.lines ? o.lines.map((ln) => (ln.texts || []).filter((t) => t != null).join(" / ") || null) : (o.list_texts || [])).filter((t) => t != null);
+    const texts = (o.lines ? o.lines.map((ln) => (ln.texts || []).filter((t) => t != null && t.trim()).join(" / ") || null) : (o.list_texts || [])).filter((t) => t != null);
     const res = o.resolved || {};
     const own = res.text_index && res.text_index.texts ? res.text_index.texts.filter(Boolean)
       : (res.texts || []).map((t) => t && t.texts && t.texts.find(Boolean)).filter(Boolean);
@@ -517,17 +551,19 @@ async function detailScreen(d, id) {
       : o.line ? h("span", { class: "muted" }, "↳ line") : h("span", { class: "muted" }, `type ${o.type}`);
     const nimg = (o.list_images || []).length;
     tb.append(h("tr", { "data-obj": o.obj, class: o.line ? "line" : "", onmouseenter: () => hilite(d, o.line ? o.menu : o.obj, true), onmouseleave: () => hilite(d, o.line ? o.menu : o.obj, false) },
+      h("td", { class: "show" }, showBox(n, o)),
       h("td", { class: "mono" }, what, o.missing ? h("span", { class: "problem" }, " empty slot") : null),
       h("td", {}, (sec && OBJ_KIND[sec]) || o.kind || "", o.probable ? h("small", { class: "muted" }, " (section guessed)") : null, o.fixed ? h("small", { class: "muted" }, " · fixed part") : null),
       h("td", { class: "idx" }, fl.x != null ? `${fl.x},${fl.y}` : ""),
       h("td", { class: "idx" }, o.fixed ? "" : String(o.obj)),
-      h("td", { style: "font-size:12.5px" }, texts.length ? h("span", { title: o.list || "" }, texts.slice(0, 8).map((t) => String(t).replace(/\r/g, " ")).join(" · "), texts.length > 8 ? ` … (${texts.length})` : "")
+      h("td", { style: "font-size:12.5px" }, texts.length ? h("span", { title: o.list || "" }, texts.slice(0, 8).map((t) => String(t).replace(/\r/g, " ").trim() || "(empty)").join(" · "), texts.length > 8 ? ` … (${texts.length})` : "")
         : nimg ? picker(n, o)
         : own.length ? h("span", {}, own.slice(0, 8).join(o.lines ? " · " : " / ")) : o.list ? h("small", { class: "muted mono" }, o.list.replace(/^List_GDO_/, "")) : "")));
   }
   d.append(h("h3", {}, `${sc.objects.length} widgets`),
-    h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y in zone"), h("th", {}, "object id"), h("th", {}, "texts / list"))), tb),
-    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the display. Positions count from the top left corner of the zone. Which line, text or picture is shown, and whether a widget is visible at all, is decided by the unit while it runs: the lists are what the firmware attaches to this screen. A variable picture shows one picture of its list at a time; the software picks it by number (the first is usually an empty one, for \"off\"). Choose here which one the display above shows, or click the picture on the display."));
+    h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", { title: "shown on the display above" }, "show"), h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y in zone"), h("th", {}, "object id"), h("th", {}, "texts / list"))), tb),
+    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the display. Positions count from the top left corner of the zone. Which line, text or picture is shown, and whether a widget is visible at all, is decided by the unit while it runs: the lists are what the firmware attaches to this screen. A variable picture shows one picture of its list at a time; the software picks it by number (the first is usually an empty one, for \"off\"). Choose here which one the display above shows, or click the picture on the display. A screen can hold widgets that never appear together (the software hides a group of buttons the car has no use for): untick the box in front of a widget or a radio group to take it off the display."));
+  syncs.forEach((fn) => fn());
 }
 
 function hilite(root, obj, on) {
@@ -887,9 +923,12 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
   const colorOf = (res) => (res && res.kind === "color" ? "#" + res.hex.slice(0, 6) : "#ffffff");
   // `res` is a resolved text index, or the text itself (a menu line named by the screen)
   const textOf = (res) => (typeof res === "string" ? res : (res && res.kind === "text_index" && res.texts.find((t) => t != null)) || null);
-  const text = (x, y, w, res, color, font, label, align) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: textOf(res) || label, color: colorOf(color),
+  // a text that exists but is empty (the date screens have three, for languages that write a sign after day,
+  // month and year) is drawn as nothing; only a text the unit fills in while it runs gets a sample
+  const emptyText = (res) => !!res && res.kind === "text_index" && res.texts.some((t) => t != null) && !res.texts.some((t) => t != null && t.trim());
+  const text = (x, y, w, res, color, font, label, align) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: emptyText(res) ? "" : textOf(res) || label, color: colorOf(color),
     hex: color && color.kind === "color" ? color.hex : "ffffffff", font: font && font.kind === "font" ? font.index : null,
-    interline: f.interline || 0, align: align != null ? align : (f.text_hor_alignment != null ? f.text_hor_alignment : 0), placeholder: !textOf(res), label });
+    interline: f.interline || 0, align: align != null ? align : (f.text_hor_alignment != null ? f.text_hor_alignment : 0), placeholder: !textOf(res) && !emptyText(res), empty: emptyText(res), label });
   // buttons and menus: text_dx is an anchor inside the image. alignment 0 = centred on it (factory
   // files have text_dx = image width / 2), 1 = starts there (text_dx 7..10, 45 after a check box), 2 = ends there (assumed)
   // texts work the same, also vertically (the clock's hours end at x=60, the colon starts at 62; of the
@@ -981,11 +1020,12 @@ function paintItems(stage, items, ox, oy, rev) {
     if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + (it.url.includes("?") ? "&" : "?") + "v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));
     else if (it.type === "text") {
       // a sample for what the unit fills in; short fields (hours, a temperature) get a short one
-      const txt = it.placeholder ? (state.sampleText || (it.w < 120 ? "12" : it.w < 200 ? "12:34" : SAMPLE_TEXT)) : it.text;
+      const txt = it.placeholder ? (state.sampleText || ((it.vis != null ? it.vis : it.w) < 120 ? "12" : (it.vis != null ? it.vis : it.w) < 200 ? "12:34" : SAMPLE_TEXT)) : it.text;
       const just = ["flex-start", "center", "flex-end"][it.align] || "flex-start";
-      const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : ""}`,
+      const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : it.empty ? " (empty text)" : ""}`,
         style: `${st};justify-content:${just};align-items:${["center", "flex-start", "flex-end"][it.valign != null ? it.valign : 1] || "flex-start"};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px`, ...attrs });
-      if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
+      if (!txt.trim()) { /* nothing to draw: the outline shows where it is */ }
+      else if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
         src: `/api/render.png?font=${it.font}&text=${encodeURIComponent(txt)}&color=${it.hex}&interline=${it.interline}` }));
       else box.append(txt);
       stage.append(box);

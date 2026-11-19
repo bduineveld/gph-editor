@@ -99,7 +99,8 @@ class Workspace:
         it = self.item(self.common, "TXIN2000", link.index)
         if it is None:
             return None
-        return [self.text(i) or f"<text {i}>" for i in (it.fields.get("texts") or [])]
+        # an empty text is a text (the unit shows nothing there); only a missing one gets a marker
+        return [f"<text {i}>" if (t := self.text(i)) is None else t for i in (it.fields.get("texts") or [])]
 
     def color(self, link: Link | None) -> dict | None:
         if link is None or link.is_null:

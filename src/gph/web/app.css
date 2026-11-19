@@ -181,6 +181,8 @@ table.layers { margin-top: 8px; }
 table.layers td { font-size: 12.5px; padding-top: 3px; padding-bottom: 3px; }
 table.layers tr.own td { background: var(--bg3); }
 table.screen-objects tr.line td { color: var(--fg2); padding-top: 2px; padding-bottom: 2px; }
+table.screen-objects td.show { width: 1%; text-align: center; }
+table.screen-objects tr.off td:not(.show) { opacity: .45; }
 .stage.plain .stage-img, .stage.plain .stage-text { outline: none; }
 .stage.plain .stage-box { outline-color: rgba(76,195,138,.35); }
 .stage.plain .stage-box span { display: none; }

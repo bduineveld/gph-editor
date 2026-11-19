@@ -59,8 +59,9 @@ TYPE_SECTIONS: dict[int, str] = {
     28: "MENU2006", 34: "DTXT2000", 37: "DTXT2000", 38: "ICBT2000",
 }
 PROBABLE_TYPES = {8, 9, 37, 38}
-#: types without a GPH item behind them (map window, video, on-screen display ...): shown as boxes
-TYPE_NAMES = {7: "text?", 20: "map/video", 26: "object", 27: "object", 29: "object", 31: "object", 33: "object", 43: "text?"}
+#: types without a GPH item behind them.  20 is a radio group (``C_COL_RB``, object ids 100xxx): it has no
+#: picture of its own, the check buttons that follow it in the list are its members.
+TYPE_NAMES = {7: "text?", 20: "radio group", 26: "object", 27: "object", 29: "object", 31: "object", 33: "object", 43: "text?"}
 #: sections whose list values are text indexes (TXIN2000); VRPI lists hold IMAG2000 indexes
 TEXT_LIST_SECTIONS = {"ITXT2000", "MENU2006", "IMEN2000", "LIST2001", "MCTX2006", "ICBT2000", "EDTB2006", "CBTN2006", "FBTN2006", "DBTN2001", "DCBT2000"}
 

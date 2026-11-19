@@ -410,6 +410,24 @@ can itself be an animation, an `IMAG2000` with several pictures and a `time` (23
 images, 2 to 6 pictures at 250 to 1000 ms, such as the wait sign).  Objects that share an
 object id belong together (a menu and the `VRPI` frame around it).
 
+A radio group is an object of type 20 (sub 10, object ids 100xxx; class `C_COL_RB`) without a
+GPH item: the check buttons that follow it in the list (types 3, 5, 38) are its members (35
+groups on the 2.80 screens).  A screen lists every widget it can ever show, also those that
+never appear together.  The units menu `CONF_M8_Z1_0` (screen 292) has three groups:
+temperature at x=63, consumption at x=350 and tyre pressure (BAR/PSI) at x=457, on top of
+the consumption texts.  Its class decides when the screen opens: `SetPropFor_RB_..._Press`
+asks `C_MMI_CONF_Utilities::IsPressManagementPresent` (the car configuration of
+`C_BCM_PROXI_EOL`) and otherwise calls `FocusDisable` on the group and `SetInvisible` on both
+buttons; `..._VolDist` does the same for the consumption group from the display
+configuration, and a fourth consumption button (object 90215, not in this database) is only
+used when `C_SETUP_MANUFACTURER::IsMaserati`.  So which widgets are visible is in the code of
+the screen's class, per car make and configuration, not in the data.
+
+A fixed text can be empty on purpose.  The date screens (`CLOCK_F3_Z0_3`, `…_Z5_2`) each carry
+three `FXTX2006` items of 57 wide next to day, month and year whose texts are empty in all
+fourteen languages of 2.80 (room for a sign after each number in a language that writes one).
+Fixed texts have no object id, so the software cannot fill them: an empty one shows nothing.
+
 ### 8.3 Names
 
 Names are not stored.  Most follow from the `List_GDO` symbol names
