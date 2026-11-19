@@ -162,3 +162,25 @@ table.screen-objects tr:hover td { background: var(--bg3); }
 td.pics { white-space: nowrap; width: 1%; }
 td.pics .thumb.mini { margin-right: 4px; cursor: pointer; width: 72px; height: 44px; }
 td.pics .thumb.mini:hover { outline: 2px solid var(--accent); }
+
+/* screens: zones of the display */
+.stage .layer { position: absolute; overflow: hidden; }
+.stage .layer.outlined { outline: 1px dashed rgba(255,255,255,.75); outline-offset: -1px; }
+.stage .layer.own.outlined { outline: 2px solid var(--accent); outline-offset: -2px; }
+.stage .layer-tag { position: absolute; left: 2px; bottom: 2px; font: 11px var(--sans); color: #fff; background: rgba(0,0,0,.65); padding: 0 4px; border-radius: 3px; white-space: nowrap; z-index: 6; }
+.zone-tag { display: inline-block; font: 11.5px var(--mono); padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg3); white-space: nowrap; }
+.zone-tag.role-band, .zone-cell.role-band { border-color: #c99a3c; }
+.zone-tag.role-main, .zone-tag.role-map, .zone-tag.role-full, .zone-tag.role-window, .zone-cell.role-main, .zone-cell.role-map, .zone-cell.role-window { border-color: #4c9bd6; }
+.zone-tag.role-menu, .zone-cell.role-menu { border-color: #4cc38a; }
+.zone-tag.role-popup, .zone-tag.role-context, .zone-cell.role-popup, .zone-cell.role-context { border-color: #d6694c; }
+.zone-plans { display: flex; gap: 18px; flex-wrap: wrap; margin: 0 0 14px; }
+.zone-plan { position: relative; background: var(--bg3); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.zone-cell { position: absolute; box-sizing: border-box; border: 1px solid var(--line); background: var(--bg2); font: 10.5px var(--mono); color: var(--fg2); cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; text-align: center; }
+.zone-cell:hover, .zone-cell.on { background: var(--bg); color: var(--fg); border-width: 2px; }
+table.layers { margin-top: 8px; }
+table.layers td { font-size: 12.5px; padding-top: 3px; padding-bottom: 3px; }
+table.layers tr.own td { background: var(--bg3); }
+table.screen-objects tr.line td { color: var(--fg2); padding-top: 2px; padding-bottom: 2px; }
+.stage.plain .stage-img, .stage.plain .stage-text { outline: none; }
+.stage.plain .stage-box { outline-color: rgba(76,195,138,.35); }
+.stage.plain .stage-box span { display: none; }

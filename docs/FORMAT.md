@@ -333,7 +333,7 @@ the section size):
 | 5 | `DCBT2000` | | 23 | `SEBR2000` |
 | 8 | `EDTX2000` (probable) | | 24 | `VRPI2000` |
 | 9 | `EDTB2006` (probable) | | 25 | `VWTX2000` |
-| 10 | `BKGD2000` | | 28 | `MENU2006` (sub 19 = the menu, 25 = a menu item) |
+| 10 | `BKGD2000` | | 28 | `MENU2006` (sub 19 = the menu; sub 25 = one of its lines, no GPH item) |
 | 11 | `FXPI2000` | | 34 | `DTXT2000` (37 probably too) |
 | 12 | `FXTX2006` | | 38 | `ICBT2000` (probable) |
 | 15 | `IMEN2000` | | 7, 20, 26, 27, 29, 31, 33, 43 | no GPH item (map window, video, OSD …) |
@@ -344,9 +344,70 @@ texts and fixed pictures.  The others carry the **object ids the MMI code uses**
 indexes for texts (the month names of the clock screen, the lines of a menu) and
 `IMAG2000` indexes for variable pictures.
 
+### 8.1 A screen is one zone of the display
+
+A database "screen" is not the whole 800×480 picture.  The high byte of the index `flags`
+is the **zone** the screen goes into (`ZONEType`; ids and names are the `GOLTab_ZoneName`
+table of `bcm_gol.gz`), and the unit shows several zones at once: the pieces of the top
+band, a main area, and when needed a menu, contextual menu or popup on top.  The second
+flags byte is 1 for nearly all screens (meaning unknown).
+
+| id | zone | usual rectangle (x, y, w×h) | screens | content |
+|---|---|---|---|---|
+| 0x02 | `Z6_3` | 0, 72, 800×408 | 13 | map area; the map itself is drawn by the navigation |
+| 0x03 | `Z0_3` | 0, 72, 800×408 | 40 | main area under the top band (radio, media, trip computer, clock) |
+| 0x0F, 0x10 | `Z0_Full_1`, `Z0_Full_2` | 0, 0, 800×480 | 13 | whole display (guidance, video, parking aid) |
+| 0x0A | `Z5_Back` | 0, 0, 800×72 | 1 | top band: background |
+| 0x07 | `Z5_3` | 0, 0, 113×72 | 5 | top band, left: outside temperature |
+| 0x06 | `Z5_2` | 113, 0, 425×72 | 26 | top band, middle: line of the current source |
+| 0x09 | `Z5_5` | 538, 0, 134×72 | 3 | top band: phone status |
+| 0x05 | `Z5_1` | 672, 0, 128×72 | 4 | top band, right: clock |
+| 0x14 | `Z2` | 0, 72, 800×336 | 44 | window over the main area, leaves the bottom 72 lines free |
+| 0x15 | `Z1_0` | 38, 38, 724×404 | 305 | menu panel (79 of them fill the display instead) |
+| 0x16 | `Z4_1` | 150, 72, 496×336 | 20 | contextual menu |
+| 0x19–0x1C | `Z3_0` … `Z3_3` | 150, 72, 496×336 | 140 | popups |
+| 0x0B–0x0D | `Z0MAIN_1` … `_3` | | 0 | named in the firmware, unused in the database |
+
+The rectangle is not stored per zone: it is that of the screen's **background**.  A
+`BKGD2000` item is the only widget with a display position; **the x/y of every other widget
+count from the top left corner of that background**.  Checked on the files of a 2.80 unit:
+of the 1 100 widgets with a picture on screens whose background is not at 0,0, 94% lie
+inside their background when read this way, against 50% when read as display positions (a
+popup's buttons sit at x 22…410 in a 496 wide window that starts at x=150).  Most of the
+rest are parked outside on purpose (x ≥ 800).  The map zone has a
+4×4 dummy background at 0,72 and uses the whole area below the band.  Some screens bring
+another background than the usual one, e.g. `BKGD 22` at 312,72 (488 wide) for the main area
+next to a half-width map.
+
+One function usually has a screen in several zones under the same name:
+`TUNER_F1_0_Freq_Z0_3` (main area), `…_Z2` (window) and `…_Z5_2` (its line in the top
+band).  Which zones are combined at a given moment is decided in code (`MGR_DIS`
+`AllocateZone`/`ReleaseZone` with priorities, `BCM_GOL` `GOLAddScreen(zone)`), not in data;
+the paint order used by the editor is the order of the zone ids with the band background
+under its pieces.
+
+### 8.2 Menus
+
+A menu is one object (type 28 `MENU2006` or 15 `IMEN2000`, sub 19) followed by one object
+per **line** (type 28, sub 25, index 0).  A line is not a GPH item: it only carries the
+object id the MMI code uses and, when its text can change, a list of `TXIN2000` indexes
+(`List_GDO_Rneg2010_imenu_NAV_M1_Z1_0_l5` = "stop guidance" / "resume guidance").  Lines
+without a list take `MENU2006.texts[n]`.  The number of lines equals the menu's
+`item_count`.  A line is as high as the cursor image and `space_evenly` is the gap between
+lines: with that the factory menus fill their zone exactly (five lines of 48 + 12 from
+y=150 end at 438 of 480; the list symbols call such a menu `menu_5l`), and longer menus
+scroll.
+
+A variable picture (`VRPI2000`) has no image of its own: its list holds the `IMAG2000`
+indexes it can show.  Objects that share an object id belong together (a menu and the
+`VRPI` frame around it).
+
+### 8.3 Names
+
 Names are not stored.  Most follow from the `List_GDO` symbol names
 (`List_GDO_it_1_CLOCK_F3_Z5_2` → screen `CLOCK_F3_Z5_2`; the zone suffix `Z1_0`, `Z0_3`,
-`Z5_2`, `Full_1` tells where on the display it goes); the rest come from the MMI modules in
+`Z5_2`, `Full_1` is the zone, though a list shared between zones keeps the name of the
+first; the flags are authoritative); the rest come from the MMI modules in
 `Application/MMI/*/mmi_*.gz` (same compression, ELF with symbols): every menu screen is a
 C++ class `C_Menu_<NAME>` whose constructor loads the screen id into `r7` (`li r7, 39`)
 right before calling `C_MENU_STATE::C_MENU_STATE(zone, kbd, int, screen)`, and the
@@ -357,7 +418,19 @@ status, Speech reco, nav simulation), and its database entry is background 4, fi
 350, a 250×6 line and `MENU2006[1]` with four items.
 
 Implementation: [`src/gph/screens.py`](../src/gph/screens.py); the web UI shows the
-screens when a `GraphicBase.RNEG.gz` is opened (or sits under the opened folder).
+screens when a `GraphicBase.RNEG.gz` is opened (or sits under the opened folder): each one
+in its zone, with the zones the unit shows around it.
+
+### 8.4 Text positions are anchors
+
+Seen while placing texts in their zones: the x/y of a text is an anchor, and the alignment
+says how the text hangs on it.  `text_hor_alignment` 0 = centred on x, 1 = starts at x,
+2 = ends at x (the clock's hours are a 58 wide `DTXT` at x=60 with alignment 2, the colon a
+fixed text at x=62, the minutes start at x=73); `text_ver_alignment` works the same on y.
+Of the texts with alignment 0, 88% fit their zone when centred on x and 28% when started
+there.  This is the convention of the buttons (`alignment`, §3.2).  `FXTX2006` has no
+alignment fields: its `style` byte is `vertical << 4 | horizontal` (0x10 centred, 0x11
+starts at x, 0x12 ends at x).
 
 ## 9. Open questions
 
@@ -366,4 +439,7 @@ screens when a `GraphicBase.RNEG.gz` is opened (or sits under the opened folder)
 * `BFNT2000` glyph record first word ("baseline"?) is 0 everywhere; GPH_EDITOR's export
   marks a baseline, so it may live elsewhere.
 * `PALE2000`, `TXUR2000`, `RAWD2000` content.
-* Exact meaning of `level`, `overall`, `style` bit fields, `pb_style`, `unit_dependance`.
+* Exact meaning of `level`, `overall`, `style` bit fields (except `FXTX2006`, §8.4), `pb_style`,
+  `unit_dependance`.
+* Screens: which zones the unit combines when (code in `MGR_DIS`/`BCM_MENU`), the second flags
+  byte, what `Z2` is used for, and which text colour a selected or disabled menu line gets.

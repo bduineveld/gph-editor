@@ -67,7 +67,7 @@ from .edit import (default_filename, get_fields, load_frames, set_color, set_ima
 from .encode import EncodeError
 from .inf import InfFile
 from .schema import IMAG_FLAGS, IMAG_STRETCH, SECTION_DESCRIPTIONS, TXCO_DESCRIPTIONS
-from .screens import TEXT_LIST_SECTIONS, ScreenDatabase, ScreenError, find_graphic_base, find_mmi_folder
+from .screens import DISPLAY, TEXT_LIST_SECTIONS, ScreenDatabase, ScreenError, find_graphic_base, find_mmi_folder
 from .workspace import Workspace
 
 MAX_UNDO = 50
@@ -475,7 +475,8 @@ class Editor:
         if section.startswith("IMAG"):
             d["used_by"] = self.where_used(of, index)
         if self.screens and of.file is ws.common:
-            d["screens"] = [{"id": sid, "name": self.screens.screens[sid].name} for sid in self.screens.uses(section, index)]
+            d["screens"] = [dict(self._screen_ref(sid), rect=self._zone_rect(ws, self.screens.screens[sid]))
+                            for sid in self.screens.uses(section, index)]
         return d
 
     # -- screens of the unit -------------------------------------------------
@@ -484,8 +485,32 @@ class Editor:
             raise ApiError("no screen database open (open a GraphicBase.RNEG.gz of the unit's software)", 404)
         return [sc.to_json(objects=False) for _sid, sc in sorted(self.screens.screens.items())]
 
+    def _zone_rect(self, ws: Workspace, sc) -> list[int]:
+        """Where a screen sits on the display: the rectangle of its background (the only widget
+        with an absolute position), else the usual rectangle of its zone."""
+        z = sc.zone
+        usual = list(z.rect) if z and z.rect else [0, 0, *DISPLAY]
+        bk = next((o for o in sc.objects if o.section == "BKGD2000"), None)
+        it = ws.item(ws.common, "BKGD2000", bk.index) if bk is not None and ws.common is not None else None
+        if it is None:
+            return usual
+        x, y = it.fields.get("x", 0), it.fields.get("y", 0)
+        im = ws.image(it.fields["image"]) if it.fields.get("image") is not None and not it.fields["image"].is_null else None
+        if im is None or im.fields["width"] < 16 or im.fields["height"] < 16:  # the map zone has a 4x4 dummy
+            return [x, y, usual[2], usual[3]] if (x, y) == tuple(usual[:2]) else [x, y, DISPLAY[0] - x, DISPLAY[1] - y]
+        return [x, y, im.fields["width"], im.fields["height"]]
+
+    def _screen_ref(self, sid: int) -> dict:
+        sc = self.screens.screens[sid]
+        return {"id": sid, "name": sc.name, "zone": sc.zone_id, "zone_name": sc.zone.name if sc.zone else None}
+
     def screen_detail(self, sid: int) -> dict:
-        """One screen with every widget decoded (fields + resolved links) so the UI can draw it."""
+        """One screen with every widget decoded (fields + resolved links) so the UI can draw it.
+
+        ``rect`` is its place on the display; the widget positions are relative to that.  A
+        menu gets its ``lines`` (object id and texts of each), a variable picture the images of
+        its list.  ``family`` and ``companions`` point at the screens shown around it.
+        """
         if self.screens is None:
             raise ApiError("no screen database open", 404)
         sc = self.screens.screens.get(sid)
@@ -493,8 +518,9 @@ class Editor:
             raise ApiError(f"no screen {sid}", 404)
         ws = self.workspace()
         of = self._of_for(ws.common)
+        list_texts = lambda o: [(ws.text_index(Link("GEN ", v)) or [None])[0] for v in o.values]
         objects = []
-        for o in sc.objects:
+        for n, o in enumerate(sc.objects):
             j = o.to_json()
             if o.section and of is not None:
                 it = ws.item(ws.common, o.section, o.index)
@@ -502,13 +528,22 @@ class Editor:
                     j["missing"] = True
                 else:
                     j.update(file=of.id, fields=it.to_json(), resolved=self.resolve_fields(ws, o.section, it.fields))
-            if o.values and o.section in TEXT_LIST_SECTIONS:
-                j["list_texts"] = [(ws.text_index(Link("GEN ", v)) or [None])[0] for v in o.values]
+            if o.is_menu_line:
+                j["menu"] = sc.objects[o.menu].obj_id if o.menu is not None else None
+                j["list_texts"] = list_texts(o)
+            elif o.values and o.section in TEXT_LIST_SECTIONS:
+                j["list_texts"] = list_texts(o)
             elif o.values and o.section == "VRPI2000":
                 j["list_images"] = [self._resolve_link(ws, "image", Link("GEN ", v)) for v in o.values]
+            lines = [ln for ln in sc.objects if ln.menu == n]
+            if lines:
+                j["lines"] = [{"obj": ln.obj_id, "list": ln.list_name, "texts": list_texts(ln)} for ln in lines]
             objects.append(j)
         d = sc.to_json(objects=False)
-        d.update(objects=objects, common_file=of.id if of else None)
+        d.update(objects=objects, common_file=of.id if of else None, rect=self._zone_rect(ws, sc),
+                 zone_info=sc.zone.to_json() if sc.zone else None,
+                 family=[self._screen_ref(i) for i in self.screens.family(sid)],
+                 companions=[self._screen_ref(i) for i in self.screens.companions(sid)])
         return d
 
     def where_used(self, of: OpenFile, image_index: int) -> list[str]:

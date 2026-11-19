@@ -31,8 +31,11 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
   texts and colours, replace images and textures (with a quality preview), change any
   widget field as JSON, undo, and save packages.
 * **Screens**: the firmware's screen database (`GraphicBase.RNEG.gz` from the unit or its
-  software update) is decoded, so the editor can show the 615 screens of the unit with every
-  widget in place and tell for each widget on which screens it appears (`docs/FORMAT.md` §8).
+  software update) is decoded, so the editor can show the 615 screens of the unit and tell
+  for each widget on which screens it appears.  A screen is one *zone* of the display (a
+  piece of the top band, the main area, a menu panel, a popup …): the editor draws it in
+  its place together with the zones the unit shows around it, and you can swap those to
+  compose a complete picture (`docs/FORMAT.md` §8).
 * Not yet tried on a real unit.
 
 ## Install
@@ -85,9 +88,11 @@ gph serve Graphics/ --screens RT6-Soft/Data_Base/Graphics/GraphicBase.RNEG.gz
 ```
 
 (or open that file, or a folder containing it, with *Open…*).  A *Screens* entry then lists
-every screen of the unit by name and draws it complete: background, fixed texts and
-pictures, buttons, menus with the lines the firmware attaches to them, texts with their
-font and colour.  Each widget links to its item, and each item says on which screens it
+every screen of the unit by name and zone, and draws it in its place on the display:
+background, fixed texts and pictures, buttons, menus with the lines the firmware attaches
+to them, texts with their font and colour, with the top band and the other zones the unit
+shows around it (a proposal you can change: which zones go together is decided by the unit
+while it runs).  Each widget links to its item, and each item says on which screens it
 appears.  When the software update's `Application/MMI` folder sits next to the database,
 the screen names and owning modules are read from the firmware modules as well.  The
 server binds to localhost only and can read and write files on this machine, like any

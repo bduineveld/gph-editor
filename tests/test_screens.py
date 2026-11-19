@@ -10,10 +10,11 @@ import zlib
 
 import pytest
 
-from gph.screens import Elf, ScreenDatabase, ScreenError, find_graphic_base, unpack_module
+from gph.screens import ZONES, Elf, ScreenDatabase, ScreenError, find_graphic_base, unpack_module
 
 HERE = os.path.dirname(__file__)
 REAL = os.path.join(HERE, "..", "tools", "firmware", "GraphicBase.RNEG.elf")
+SAMPLES = os.environ.get("GPH_SAMPLES", os.path.join(HERE, "..", "samples"))
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,30 @@ def packed(elf: bytes) -> bytes:
     return b"\x08" + zlib.compress(elf)
 
 
+def zones_elf() -> bytes:
+    """A radio in three zones (main area, top band line, contextual menu) with the other band pieces."""
+    entry = lambda oid, r: struct.pack(">III", oid, r, 0)
+    end = bytes(12)
+    tables = {
+        10: (0x03010000, entry(10, ref(10, 0, 9)) + entry(20001, ref(16, 2, 3)) + end, [(20, "List_GDO_it_1_RADIO_F1_Z0_3")]),
+        11: (0x06010000, entry(11, ref(10, 0, 16)) + entry(20002, ref(16, 2, 4)) + end, [(20, "List_GDO_it_1_RADIO_F1_Z5_2")]),
+        12: (0x0A010000, entry(12, ref(10, 0, 37)) + end, []),
+        13: (0x05010000, entry(13, ref(10, 0, 15)) + entry(120001, ref(34, 13, 1)) + end, []),
+        14: (0x07010000, entry(14, ref(10, 0, 17)) + entry(120002, ref(34, 13, 2)) + end, []),
+        15: (0x05010000, entry(15, ref(10, 0, 15)) + end, []),   # an empty variant of the clock zone
+        20: (0x16010000, entry(20, ref(10, 0, 8)) + entry(180001, ref(28, 19, 2)) + entry(240001, ref(28, 25, 0))
+             + entry(240002, ref(28, 25, 0)) + entry(20003, ref(24, 2, 7)) + end, [(32, "List_GDO_ctx_menu_3l_RADIO_C1_Z4_1_l1"), (56, "List_GDO_vp_x")]),
+        21: (0x10010000, entry(290001, ref(29, 29, 0)) + end, []),
+    }
+    index = b"".join(struct.pack(">III", sid, flags, 0) for sid, (flags, _t, _p) in tables.items())
+    objs = [("pIndexOfScreenDataBase", index, [(n * 12 + 8, f"pDataBase{sid:06d}") for n, sid in enumerate(tables)])]
+    objs += [(f"pDataBase{sid:06d}", t, p) for sid, (_f, t, p) in tables.items()]
+    objs += [(n, struct.pack(">HH", 1, v), []) for n, v in (("List_GDO_it_1_RADIO_F1_Z0_3", 100), ("List_GDO_it_1_RADIO_F1_Z5_2", 101),
+                                                           ("List_GDO_ctx_menu_3l_RADIO_C1_Z4_1_l1", 102))]
+    objs.append(("List_GDO_vp_x", struct.pack(">HHH", 2, 30, 31), []))
+    return build_elf(objs)
+
+
 # ---------------------------------------------------------------------------
 def test_unpack_module():
     elf = sample_elf()
@@ -131,6 +156,80 @@ def test_parse_screens():
     assert db.summary()["count"] == 2 and db.summary()["named"] == 1
     j = s7.to_json()
     assert j["count"] == 4 and j["sections"] == ["BKGD2000", "FXTX2006", "ITXT2000", "MENU2006"]
+
+
+def test_zones_and_companions():
+    db = ScreenDatabase.from_bytes(zones_elf())
+    s10, s11, s20 = db.screens[10], db.screens[11], db.screens[20]
+    assert (s10.zone.name, s10.zone.role, s10.zone.rect) == ("Z0_3", "main", (0, 72, 800, 408))
+    assert (s11.zone.name, s11.zone.role) == ("Z5_2", "band") and s20.zone.name == "Z4_1"
+    assert s10.name == "RADIO_F1_Z0_3" and s10.base == s11.base == "RADIO_F1" and s20.base == "RADIO_C1"
+    assert db.family(10) == [11] and db.family(11) == [10] and db.family(20) == []
+    # the top band (background, temperature, the source line of this screen, clock) around a main screen
+    assert db.companions(10) == [12, 14, 11, 13]
+    # around the band line: its main screen and the other pieces; the clock zone's plain screen, not the empty one
+    assert db.companions(11) == [10, 12, 14, 13]
+    # under a contextual menu: the main screen of the same function with its band line
+    assert db.companions(20) == [10, 12, 14, 11, 13]
+    assert db.companions(21) == []   # the whole display: nothing around it
+    j = s10.to_json(objects=False)
+    assert (j["zone"], j["zone_name"], j["role"]) == (3, "Z0_3", "main")
+    zones = {z["name"]: z for z in db.summary()["zones"]}
+    assert zones["Z5_1"]["count"] == 2 and zones["Z4_1"]["rect"] == [150, 72, 496, 336] and "Z2" not in zones
+    assert zones["Z5_Back"]["order"] < zones["Z5_2"]["order"] < zones["Z4_1"]["order"]   # paint order, bottom first
+    assert all(z.id == zid for zid, z in ZONES.items())
+
+
+def test_menu_lines():
+    db = ScreenDatabase.from_bytes(zones_elf())
+    sc = db.screens[20]
+    menu, l1, l2, vp = sc.objects[1:]
+    assert menu.section == "MENU2006" and not menu.is_menu_line
+    # a line is no GPH item: it belongs to the menu before it and may carry its own text list
+    assert l1.is_menu_line and l1.section is None and l1.menu == 1 and l1.values == [102]
+    assert l2.is_menu_line and l2.menu == 1 and l2.values == []
+    assert vp.menu is None and vp.section == "VRPI2000" and vp.values == [30, 31]
+    assert sc.menus() == [(menu, [l1, l2])]
+    assert db.uses("MENU2006", 2) == [20] and db.uses("MENU2006", 0) == []
+    assert l1.to_json()["kind"] == "menu line" and l1.to_json()["line"] is True
+    assert sc.to_json()["sections"] == ["BKGD2000", "MENU2006", "VRPI2000"]
+
+
+def test_screen_detail_zone():
+    from gph.server import Editor
+    ed = Editor()
+    ed.screens = ScreenDatabase.from_bytes(zones_elf())
+    d = ed.screen_detail(20)
+    assert d["rect"] == [150, 72, 496, 336] and d["zone_info"]["name"] == "Z4_1"   # no GEN_common: the zone's usual place
+    assert [c["id"] for c in d["companions"]] == [10, 12, 14, 11, 13] and d["companions"][0]["zone_name"] == "Z0_3"
+    menu, l1, l2, vp = d["objects"][1:]
+    assert menu["lines"] == [{"obj": 240001, "list": "List_GDO_ctx_menu_3l_RADIO_C1_Z4_1_l1", "texts": [None]},
+                             {"obj": 240002, "list": None, "texts": []}]
+    assert l1["menu"] == 180001 and l1["section"] is None and "lines" not in l1
+    assert ed.screen_detail(10)["family"] == [{"id": 11, "name": "RADIO_F1_Z5_2", "zone": 6, "zone_name": "Z5_2"}]
+    assert ed.screen_detail(21)["rect"] == [0, 0, 800, 480]
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.isdir(os.path.join(SAMPLES, "peugeot", "Common"))),
+                    reason="no firmware GraphicBase and factory GEN_common")
+def test_real_zone_rectangles():
+    """With the factory files a screen sits where its background is, and its widgets fit inside."""
+    from gph.server import Editor
+    ed = Editor()
+    ed.open_path(os.path.join(SAMPLES, "peugeot", "Common"))
+    ed.open_path(os.path.join(SAMPLES, "peugeot", "HARM00"))
+    ed.open_screens(REAL)
+    rect = lambda sid: ed.screen_detail(sid)["rect"]
+    assert rect(47) == [0, 72, 800, 408]      # radio, main area
+    assert rect(49) == [113, 0, 425, 72]      # radio, line in the top band
+    assert rect(117) == [672, 0, 128, 72]     # clock
+    assert rect(39) == [38, 38, 724, 404]     # a menu panel
+    assert rect(40) == [150, 72, 496, 336]    # a contextual menu
+    assert rect(965) == [0, 72, 800, 408]     # the map zone: its background is a 4x4 dummy
+    d = ed.screen_detail(40)
+    assert [ln["obj"] for ln in d["objects"][2]["lines"]] == [240311, 240313]
+    item = ed.item_detail(ed._of_for(ed.workspace().common), "MENU2006", 15)
+    assert item["screens"] == [{"id": 40, "name": d["name"], "zone": 0x16, "zone_name": "Z4_1", "rect": [150, 72, 496, 336]}]
 
 
 @pytest.mark.parametrize("symbol, name", [
@@ -225,7 +324,12 @@ def test_real_database():
     assert len(db.screens) == 615
     s39 = db.screens[39]
     assert [(o.section, o.index) for o in s39.objects[:4]] == [("BKGD2000", 4), ("FXTX2006", 350), ("FXPI2000", 122), ("MENU2006", 1)]
-    assert db.uses("MENU2006", 1) == [39]
+    assert db.uses("MENU2006", 1) == [39] and db.uses("MENU2006", 0) == []
+    assert [ln.obj_id for ln in s39.menus()[0][1]] and len(s39.menus()[0][1]) == 4   # its four lines
+    assert {sc.zone_id for sc in db.screens.values()} - set(ZONES) == {0}            # one empty screen has no zone
+    # names here come from the list symbols only; the zone and the band pieces do not depend on them
+    assert db.screens[47].zone.name == "Z0_3" and 48 in db.family(47)
+    assert db.companions(47)[:2] == [1715, 123] and db.companions(47)[-1] == 117
     assert db.summary()["named"] > 200
     # every typed reference points inside its section's slot range (sizes of the factory GEN_common)
     slots = {"BKGD2000": 38, "FXPI2000": 161, "FXTX2006": 728, "DTXT2000": 350, "ITXT2000": 180, "FBTN2006": 224, "CBTN2006": 157,

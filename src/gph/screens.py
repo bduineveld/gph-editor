@@ -20,6 +20,16 @@ software update CD).  It is a PowerPC ELF relocatable file without code, only ta
 The files are compressed as one prefix byte (``0x08``) followed by a zlib stream; the
 decompressed size is in the ``.inf`` side-car as ``USIZE``.
 
+A database "screen" is not the whole display but **one zone** of it.  The high byte of the
+index ``flags`` is the zone (see :data:`ZONES`): pieces of the top band, the main area, the
+menu panel, the popup window ...  The unit shows several at once, each in its own rectangle,
+and the positions of a screen's widgets are relative to the top left corner of its zone (the
+position of its background, ``BKGD2000`` x/y, which is the only absolute one).
+
+A menu is one object (type 28 or 15, sub 19) followed by its lines (type 28, sub 25, index
+0): a line is no GPH item of its own, it only carries an object id and, when the text can
+change, a list of ``TXIN2000`` indexes.
+
 Screen names are not stored directly.  Most can be read off the ``List_GDO`` symbol names
 (``List_GDO_it_1_CLOCK_F3_Z5_2`` belongs to screen ``CLOCK_F3_Z5_2``); the rest come from the
 MMI modules (``Application/MMI/*/mmi_*.gz``), where every menu screen is a C++ class
@@ -53,6 +63,53 @@ PROBABLE_TYPES = {8, 9, 37, 38}
 TYPE_NAMES = {7: "text?", 20: "map/video", 26: "object", 27: "object", 29: "object", 31: "object", 33: "object", 43: "text?"}
 #: sections whose list values are text indexes (TXIN2000); VRPI lists hold IMAG2000 indexes
 TEXT_LIST_SECTIONS = {"ITXT2000", "MENU2006", "IMEN2000", "LIST2001", "MCTX2006", "ICBT2000", "EDTB2006", "CBTN2006", "FBTN2006", "DBTN2001", "DCBT2000"}
+
+
+
+@dataclass(frozen=True)
+class Zone:
+    id: int                 #: high byte of the screen's flags (``ZONEType`` in the firmware)
+    name: str               #: the firmware's name without ``ZONE_`` (``GOLTab_ZoneName`` in bcm_gol)
+    role: str               #: map, main, full, band, window, menu, context or popup
+    rect: tuple[int, int, int, int] | None  #: usual x, y, width, height on the 800x480 display
+    title: str
+
+    def to_json(self) -> dict:
+        return {"id": self.id, "name": self.name, "role": self.role, "rect": list(self.rect) if self.rect else None,
+                "title": self.title, "order": ZONE_ORDER.get(self.id, 0)}
+
+
+#: The zones in paint order, bottom first.  Ids and names are the firmware's ``GOLTab_ZoneName``
+#: table; the rectangles are those of the zone backgrounds in the factory database (a screen
+#: with another background has its own rectangle, e.g. the half-width main area next to the map).
+#: The paint order is the order of the ids, except that the band background goes under its pieces.
+ZONES: dict[int, Zone] = {z.id: z for z in (
+    Zone(0x02, "Z6_3", "map", (0, 72, 800, 408), "map area (the map itself is drawn by the navigation)"),
+    Zone(0x03, "Z0_3", "main", (0, 72, 800, 408), "main area under the top band"),
+    Zone(0x0B, "Z0MAIN_1", "main", None, "main area (unused in the database)"),
+    Zone(0x0C, "Z0MAIN_2", "main", None, "main area (unused in the database)"),
+    Zone(0x0D, "Z0MAIN_3", "main", None, "main area (unused in the database)"),
+    Zone(0x0F, "Z0_Full_1", "full", (0, 0, 800, 480), "whole display"),
+    Zone(0x10, "Z0_Full_2", "full", (0, 0, 800, 480), "whole display (video, parking aid)"),
+    Zone(0x0A, "Z5_Back", "band", (0, 0, 800, 72), "top band: background"),
+    Zone(0x07, "Z5_3", "band", (0, 0, 113, 72), "top band, left: outside temperature"),
+    Zone(0x06, "Z5_2", "band", (113, 0, 425, 72), "top band, middle: current source"),
+    Zone(0x09, "Z5_5", "band", (538, 0, 134, 72), "top band: phone status"),
+    Zone(0x05, "Z5_1", "band", (672, 0, 128, 72), "top band, right: clock"),
+    Zone(0x14, "Z2", "window", (0, 72, 800, 336), "window over the main area (leaves the bottom 72 lines free)"),
+    Zone(0x15, "Z1_0", "menu", (38, 38, 724, 404), "menu panel"),
+    Zone(0x16, "Z4_1", "context", (150, 72, 496, 336), "contextual menu"),
+    Zone(0x19, "Z3_0", "popup", (150, 72, 496, 336), "popup"),
+    Zone(0x1A, "Z3_1", "popup", (150, 72, 496, 336), "popup"),
+    Zone(0x1B, "Z3_2", "popup", (150, 72, 496, 336), "popup"),
+    Zone(0x1C, "Z3_3", "popup", (150, 72, 496, 336), "popup"),
+)}
+ZONE_ORDER = {zid: n for n, zid in enumerate(ZONES)}
+DISPLAY = (800, 480)
+#: zone suffix of a screen name (``TUNER_F1_0_Freq_Z5_2`` -> ``TUNER_F1_0_Freq``)
+ZONE_SUFFIX = re.compile(r"_(?:Z\d(?:_Full)?(?:_\d)?|Full_\d)$")
+#: reference type/sub of a menu and of one of its lines
+MENU_TYPES, MENU_SUB, MENU_LINE = (28, 15), 19, (28, 25)
 
 ZONE = re.compile(r"^(?:Z\d(?:_\d)?|Full_\d)$")
 
@@ -153,10 +210,16 @@ class GdoObject:
     index: int           #: slot in the GPH section
     list_name: str | None = None
     values: list[int] = field(default_factory=list)
+    menu: int | None = None  #: for a menu line: position in the screen's objects of the menu it belongs to
+
+    @property
+    def is_menu_line(self) -> bool:
+        return (self.type, self.sub) == MENU_LINE
 
     @property
     def section(self) -> str | None:
-        return TYPE_SECTIONS.get(self.type)
+        """GPH section of GEN_common the object is an item of (None: no GPH item behind it)."""
+        return None if self.is_menu_line else TYPE_SECTIONS.get(self.type)
 
     @property
     def fixed(self) -> bool:
@@ -164,9 +227,13 @@ class GdoObject:
         return self.obj_id < 10000
 
     def to_json(self) -> dict:
-        return {"obj": self.obj_id, "type": self.type, "sub": self.sub, "index": self.index, "section": self.section,
-                "kind": TYPE_NAMES.get(self.type), "probable": self.type in PROBABLE_TYPES, "fixed": self.fixed,
-                "list": self.list_name, "values": self.values}
+        d = {"obj": self.obj_id, "type": self.type, "sub": self.sub, "index": self.index, "section": self.section,
+             "kind": "menu line" if self.is_menu_line else TYPE_NAMES.get(self.type),
+             "probable": self.type in PROBABLE_TYPES and not self.is_menu_line, "fixed": self.fixed,
+             "list": self.list_name, "values": self.values}
+        if self.is_menu_line:
+            d["line"] = True
+        return d
 
 
 @dataclass
@@ -179,9 +246,30 @@ class Screen:
     module: str | None = None      #: MMI module that owns it (tuner, nav ...), when known
     class_name: str | None = None  #: C++ class in that module, when known
 
+    @property
+    def zone_id(self) -> int:
+        return self.flags >> 24
+
+    @property
+    def zone(self) -> Zone | None:
+        return ZONES.get(self.zone_id)
+
+    @property
+    def base(self) -> str | None:
+        """The name without its zone suffix: the same for the variants of one screen in several zones."""
+        return ZONE_SUFFIX.sub("", self.name) if self.name else None
+
+    def menus(self) -> list[tuple[GdoObject, list[GdoObject]]]:
+        """The menus of the screen, each with its lines."""
+        return [(m, [o for o in self.objects if o.menu == n]) for n, m in enumerate(self.objects)
+                if m.type in MENU_TYPES and m.sub == MENU_SUB]
+
     def to_json(self, objects: bool = True) -> dict:
+        z = self.zone
         d = {"id": self.id, "name": self.name, "module": self.module, "class": self.class_name, "flags": self.flags,
-             "count": len(self.objects), "sections": sorted({o.section or f"type {o.type}" for o in self.objects})}
+             "zone": self.zone_id, "zone_name": z.name if z else None, "role": z.role if z else None,
+             "count": len(self.objects),
+             "sections": sorted({o.section or f"type {o.type}" for o in self.objects if not o.is_menu_line})}
         if objects:
             d["objects"] = [o.to_json() for o in self.objects]
         return d
@@ -229,6 +317,12 @@ class ScreenDatabase:
                 lst = elf.target(tsym, o + 8)
                 values = self._list_values(elf, lst) if lst else []
                 objects.append(GdoObject(oid, ref >> 24, (ref >> 16) & 0xFF, ref & 0xFFFF, lst, values))
+            menu = None  # a menu's lines follow it
+            for n, ob in enumerate(objects):
+                if ob.type in MENU_TYPES and ob.sub == MENU_SUB:
+                    menu = n
+                elif ob.is_menu_line:
+                    ob.menu = menu
             self.screens[sid] = Screen(sid, flags, table, objects)
 
     @staticmethod
@@ -370,9 +464,59 @@ class ScreenDatabase:
                         self._uses[(o.section, o.index)].append(sid)
         return self._uses.get((section, index), [])
 
+    def family(self, sid: int) -> list[int]:
+        """The other screens with the same name in another zone (the radio's main area, window
+        and top band line ...)."""
+        sc = self.screens[sid]
+        if not sc.base:
+            return []
+        return sorted(o.id for o in self.screens.values() if o.id != sid and o.base == sc.base and o.zone_id != sc.zone_id)
+
+    def _first(self, zone_id: int, min_objects: int = 1) -> int | None:
+        """Lowest screen id of a zone with at least ``min_objects`` objects (the plain variant)."""
+        return min((s.id for s in self.screens.values() if s.zone_id == zone_id and len(s.objects) >= min_objects), default=None)
+
+    def companions(self, sid: int) -> list[int]:
+        """Screens to show around ``sid`` for a complete display, as a starting point.
+
+        Which zones the unit really combines is decided at runtime (display manager); this
+        picks what always goes together: the top band (background, temperature, clock and the
+        source line that belongs to the main screen) and, under a menu or popup, the main
+        screen of the same function.  Full-screen zones get nothing.
+        """
+        sc = self.screens[sid]
+        role = sc.zone.role if sc.zone else None
+        if role in (None, "full"):
+            return []
+        out: list[int] = []
+        fam = {self.screens[i].zone_id: i for i in reversed(self.family(sid))}  # zone -> lowest id
+        main = sc if role in ("main", "map", "window") else None
+        if main is None:
+            mid = fam.get(0x03)
+            if mid is None and role != "band" and sc.name:   # a menu or popup: main screen of the same function
+                prefix = sc.name.split("_")[0] + "_"
+                mid = min((s.id for s in self.screens.values()
+                           if s.zone_id in (0x03, 0x02) and (s.name or "").startswith(prefix)), default=None)
+            if mid is not None:
+                main = self.screens[mid]
+                out.append(mid)
+        for zid in (0x0A, 0x07, 0x06, 0x05):
+            if zid == sc.zone_id:
+                continue
+            if zid == 0x06:   # the source line that belongs to the main screen
+                pick = fam.get(zid) if main is sc else next(
+                    (i for i in (self.family(main.id) if main else []) if self.screens[i].zone_id == zid), None)
+            else:
+                pick = self._first(zid, 1 if zid == 0x0A else 2)
+            if pick is not None:
+                out.append(pick)
+        return out
+
     def summary(self) -> dict:
+        used = collections.Counter(s.zone_id for s in self.screens.values())
         return {"path": self.path, "version": self.version, "build": self.build, "count": len(self.screens),
-                "named": sum(1 for s in self.screens.values() if s.name)}
+                "named": sum(1 for s in self.screens.values() if s.name),
+                "zones": [dict(z.to_json(), count=used[z.id]) for z in ZONES.values() if used[z.id]]}
 
 
 def find_graphic_base(path: str | os.PathLike) -> str | None:

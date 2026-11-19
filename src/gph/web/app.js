@@ -8,6 +8,9 @@ const state = {
   rows: [],             // rows of the current section
   filter: "",
   screens: null,        // from /api/screens (the unit's screen database), loaded on demand
+  zoneFilter: "",       // screens list: role or zone id to show
+  layers: {},           // screen id -> ids of the screens shown around it on the display
+  picks: {},            // screen id -> {object id: which picture of a variable picture is shown}
 };
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -350,96 +353,181 @@ function renderOther() {
 }
 
 // ---------------------------------------------------------------------------
-// screens of the unit (GraphicBase.RNEG): which widgets form each screen
+// screens of the unit (GraphicBase.RNEG): which widgets form each screen, and where on the
+// display it goes.  A "screen" is one zone of the display; the unit shows several at once.
+const ROLE_TITLE = { map: "map", main: "main area", full: "whole display", band: "top band", window: "window", menu: "menu", context: "contextual menu", popup: "popup" };
+const zoneList = () => (state.settings && state.settings.screens && state.settings.screens.zones) || [];
+const zoneById = (id) => zoneList().find((z) => z.id === id);
+
 function renderScreens(keepFocus) {
   const main = $("#main");
   const focused = keepFocus && document.activeElement && document.activeElement.tagName === "INPUT";
   const caret = focused ? document.activeElement.selectionStart : 0;
   main.innerHTML = "";
   const q = state.filter.toLowerCase();
-  const rows = state.rows.filter((r) => !q || String(r.id) === q || (r.name || "").toLowerCase().includes(q) || (r.module || "").toLowerCase().includes(q) || (r.class || "").toLowerCase().includes(q));
+  const zf = state.zoneFilter || "";
+  const rows = state.rows.filter((r) => (!zf || r.role === zf || zf.split(",").includes(String(r.zone)))
+    && (!q || String(r.id) === q || (r.name || "").toLowerCase().includes(q) || (r.module || "").toLowerCase().includes(q) || (r.class || "").toLowerCase().includes(q) || (r.zone_name || "").toLowerCase() === q));
   const tb = h("tbody");
   for (const r of rows) {
     tb.append(h("tr", { "data-i": r.id, onclick: () => go(null, "screens", r.id) },
       h("td", { class: "idx" }, String(r.id)),
       h("td", {}, r.name ? h("b", {}, r.name) : h("span", { class: "muted" }, "(no name found)"), r.class && r.class !== "C_" + r.name && r.class !== "C_Menu_" + r.name ? h("small", { class: "muted mono" }, " " + r.class) : null),
+      h("td", {}, r.zone_name ? h("span", { class: "zone-tag role-" + r.role, title: (zoneById(r.zone) || {}).title || "" }, r.zone_name) : h("span", { class: "muted" }, "?"), " ", h("small", { class: "muted" }, ROLE_TITLE[r.role] || "")),
       h("td", { class: "mono" }, r.module || ""),
       h("td", { class: "idx" }, String(r.count)),
       h("td", { class: "mono muted", style: "font-size:12px" }, r.sections.map((x) => (x.startsWith("type") ? "?" : x.slice(0, 4))).join(" "))));
   }
+  const roles = [...new Set(zoneList().map((z) => z.role))];
+  const zsel = h("select", { title: "show the screens of one kind of zone", onchange: (e) => { state.zoneFilter = e.target.value; renderScreens(); } },
+    h("option", { value: "" }, "all zones"),
+    ...roles.map((ro) => h("option", { value: ro, selected: zf === ro }, `${ROLE_TITLE[ro] || ro} (${zoneList().filter((z) => z.role === ro).reduce((n, z) => n + z.count, 0)})`)),
+    h("optgroup", { label: "one zone" }, ...zoneList().map((z) => h("option", { value: String(z.id), selected: zf === String(z.id) }, `${z.name} (${z.count})`))));
   const info = state.settings && state.settings.screens;
-  const head = viewHead("Screens", info ? (isPublic() ? info.path.split("/").pop() : info.path.split("/").slice(-3).join("/")) : "", null);
-  main.append(head, h("p", { class: "muted", style: "margin:-6px 0 10px" },
-    "Every screen the unit's software can show, with the GEN_common widgets it is built from (names come from the firmware modules; the unit fills in texts and pictures at runtime)."),
-    h("table", { class: "items" }, h("thead", {}, h("tr", {}, h("th", {}, "id"), h("th", {}, "screen"), h("th", {}, "module"), h("th", {}, "widgets"), h("th", {}, "kinds"))), tb));
+  const head = viewHead("Screens", info ? (isPublic() ? info.path.split("/").pop() : info.path.split("/").slice(-3).join("/")) : "", zsel);
+  main.append(head, h("p", { class: "muted", style: "margin:-6px 0 10px;max-width:980px" },
+    "Every screen in the unit's software, with the GEN_common widgets it is built from. A screen fills one zone of the display, not all of it: the unit shows a main area, the pieces of the top band and, when needed, a menu or a popup on top. Open one to see it in place, together with what is shown around it."),
+    zoneMap(),
+    h("table", { class: "items" }, h("thead", {}, h("tr", {}, h("th", {}, "id"), h("th", {}, "screen"), h("th", {}, "zone"), h("th", {}, "module"), h("th", {}, "widgets"), h("th", {}, "kinds"))), tb));
   $(".count", head).textContent = `${rows.length} of ${state.rows.length}`;
   if (focused) { const inp = $(".view-head input"); inp.focus(); inp.setSelectionRange(caret, caret); }
   highlightActive();
+}
+
+/** A small plan of the display with the usual place of every zone; click one to filter the list. */
+function zoneMap() {
+  const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
+  const k = 0.3;
+  const plan = (title, roles) => {
+    const box = h("div", { class: "zone-plan", style: `width:${Math.round(scr.width * k)}px;height:${Math.round(scr.height * k)}px` });
+    for (const z of zoneList().filter((z) => z.rect && roles.includes(z.role) && z.name !== "Z5_Back")) {
+      const [x, y, w, hh] = z.rect;
+      // zones in the same place share a cell; a click shows the screens of all of them
+      const ids = zoneList().filter((o) => o.rect && roles.includes(o.role) && o.rect.join() === z.rect.join()).map((o) => o.id).join(",");
+      const same = box.querySelector(`[data-rect="${z.rect.join(",")}"]`);
+      if (same) { same.firstChild.textContent += " · " + z.name; same.title += `\n${z.name}: ${z.title} (${z.count} screens)`; continue; }
+      const on = state.zoneFilter === ids || state.zoneFilter === z.role;
+      box.append(h("div", { class: "zone-cell role-" + z.role + (on ? " on" : ""), "data-rect": z.rect.join(","),
+        title: `${z.name}: ${z.title} (${z.count} screens)`, style: `left:${x * k}px;top:${y * k}px;width:${w * k}px;height:${hh * k}px`,
+        onclick: () => { state.zoneFilter = state.zoneFilter === ids ? "" : ids; renderScreens(); } }, h("span", {}, z.name)));
+    }
+    return h("div", {}, h("div", { class: "muted", style: "font-size:12px;margin-bottom:3px" }, title), box);
+  };
+  return h("div", { class: "zone-plans" }, plan("always there: top band and main area", ["band", "main", "map"]),
+    plan("on top when needed: menu, contextual menu, popup", ["menu", "context", "popup"]),
+    plan("window: the main area without the bottom strip", ["band", "window"]));
 }
 
 const OBJ_KIND = { BKGD: "background", FXPI: "fixed picture", VRPI: "variable picture", FXTX: "fixed text", ITXT: "indexed text", DTXT: "dynamic text",
   FBTN: "button", CBTN: "check button", DBTN: "dynamic button", DCBT: "dynamic check button", ICBT: "indexed check button", MENU: "menu", IMEN: "indexed menu",
   LIST: "list", MCTX: "multiple choice", EDTX: "edited text", EDTB: "keyboard", VWTX: "view text", FBAR: "bar", SEBR: "selectable bar", CRZO: "crossroad zoom" };
 
+/** Stage items of one screen, positioned inside its zone (the background sits at 0,0). */
+function layerItems(sc) {
+  const items = [];
+  const [zx, zy, , zh] = sc.rect;
+  const picks = (state.picks[sc.id] = state.picks[sc.id] || {});
+  for (const o of sc.objects) {
+    if (!o.fields) continue;
+    const extra = { zoneH: zh };
+    if (o.lines) extra.lines = o.lines.map((ln) => (ln.texts || []).find((t) => t != null) || null);
+    if (o.list_images && o.list_images.length) { extra.images = o.list_images; extra.pick = (picks[o.obj] || 0) % o.list_images.length; }
+    const its = stageItems(o.section, o.fields, o.resolved || {}, 0, extra);
+    // indexed texts and buttons know their texts only through the screen's list: use the first
+    if (!o.lines && o.list_texts && o.list_texts.length) {
+      const texts = its.filter((it) => it.type === "text");
+      texts.forEach((it, n) => { const t = o.list_texts[n] != null ? o.list_texts[n] : o.list_texts[0]; if (t != null && it.placeholder) { it.text = t; it.placeholder = false; } });
+    }
+    const abs = o.section === "BKGD2000";   // the background is the one widget with a display position
+    for (const it of its) {
+      if (abs) { it.x -= zx; it.y -= zy; }
+      it.obj = o.obj; it.label = `${o.section.slice(0, 4)} ${hex4(o.index)} ${it.label}`;
+      if (it.cycle) it.onclick = () => { picks[o.obj] = (extra.pick + 1) % o.list_images.length; showDetail(); };
+      items.push(it);
+    }
+  }
+  return items;
+}
+
 async function detailScreen(d, id) {
   let sc;
   try { sc = await act(() => api("GET", `/api/screens/${id}`)); }
   catch (e) { d.append(h("p", { class: "problem" }, e.message)); return; }
+  const zi = sc.zone_info;
   const close = h("button", { class: "small", style: "float:right", onclick: () => go(null, "screens") }, "✕");
   d.append(close, h("h2", {}, sc.name || `screen ${sc.id}`),
+    h("p", { class: "muted", style: "font-size:12.5px;margin:0 0 4px" },
+      zi ? h("span", {}, h("span", { class: "zone-tag role-" + zi.role }, zi.name), ` ${zi.title} · ${sc.rect[2]}×${sc.rect[3]} at ${sc.rect[0]},${sc.rect[1]}`) : `unknown zone 0x${(sc.flags >>> 24).toString(16)}`),
     h("p", { class: "muted mono", style: "font-size:12px;margin:0 0 8px" }, `screen ${sc.id}`, sc.module ? ` · module ${sc.module}` : "", sc.class ? ` · ${sc.class}` : "", ` · flags 0x${sc.flags.toString(16)}`));
-  // one stage with every widget at its own position
-  const items = [];
-  const drawn = sc.objects.filter((o) => o.fields);
-  for (const o of drawn) {
-    const its = stageItems(o.section, o.fields, o.resolved || {});
-    // menus and indexed texts know their lines/texts only through the screen's list: use them
-    if (o.list_texts && o.list_texts.length) {
-      const texts = its.filter((it) => it.type === "text");
-      texts.forEach((it, n) => { const t = o.list_texts[n] != null ? o.list_texts[n] : o.list_texts[0]; if (t != null && it.placeholder) { it.text = t; it.placeholder = false; } });
-    }
-    for (const it of its) { it.obj = o.obj; it.label = `${o.section.slice(0, 4)} ${hex4(o.index)} ${it.label}`; items.push(it); }
-  }
-  d.append(screenStage(items, sc));
+  if (sc.family.length) d.append(h("p", { style: "font-size:12.5px;margin:0 0 8px" }, "Same screen in another zone: ",
+    ...sc.family.map((fm) => h("span", { class: "link", style: "margin-right:10px;white-space:nowrap", onclick: () => go(null, "screens", fm.id) }, `${fm.zone_name || "?"} (${fm.id})`))));
+  // the display: this screen in its zone, with the screens the unit shows around it
+  if (!state.layers[id]) state.layers[id] = sc.companions.map((c) => c.id);
+  const others = (await Promise.all(state.layers[id].map((oid) => api("GET", `/api/screens/${oid}`).catch(() => null)))).filter(Boolean);
+  if (state.route.i !== id || state.route.s !== "screens") return;   // moved on while loading
+  d.append(displayStage(sc, others));
   // the widgets
   const tb = h("tbody");
   for (const o of sc.objects) {
     const sec = o.section ? o.section.slice(0, 4) : null;
     const fl = o.fields || {};
-    const texts = (o.list_texts || []).filter((t) => t != null);
+    const texts = (o.lines ? o.lines.map((ln) => (ln.texts || []).filter((t) => t != null).join(" / ") || null) : (o.list_texts || [])).filter((t) => t != null);
     const res = o.resolved || {};
-    const own = res.text_index && res.text_index.texts ? res.text_index.texts.filter(Boolean) : [];
-    const what = o.section ? h("span", { class: "link", onclick: () => go(o.file, o.section, o.index) }, `${sec} ${hex4(o.index)}`) : h("span", { class: "muted" }, `type ${o.type}`);
-    tb.append(h("tr", { "data-obj": o.obj, onmouseenter: () => hilite(d, o.obj, true), onmouseleave: () => hilite(d, o.obj, false) },
+    const own = res.text_index && res.text_index.texts ? res.text_index.texts.filter(Boolean)
+      : (res.texts || []).map((t) => t && t.texts && t.texts.find(Boolean)).filter(Boolean);
+    const what = o.section ? h("span", { class: "link", onclick: () => go(o.file, o.section, o.index) }, `${sec} ${hex4(o.index)}`)
+      : o.line ? h("span", { class: "muted" }, "↳ line") : h("span", { class: "muted" }, `type ${o.type}`);
+    const nimg = (o.list_images || []).length;
+    tb.append(h("tr", { "data-obj": o.obj, class: o.line ? "line" : "", onmouseenter: () => hilite(d, o.line ? o.menu : o.obj, true), onmouseleave: () => hilite(d, o.line ? o.menu : o.obj, false) },
       h("td", { class: "mono" }, what, o.missing ? h("span", { class: "problem" }, " empty slot") : null),
       h("td", {}, (sec && OBJ_KIND[sec]) || o.kind || "", o.probable ? h("small", { class: "muted" }, " (section guessed)") : null, o.fixed ? h("small", { class: "muted" }, " · fixed part") : null),
       h("td", { class: "idx" }, fl.x != null ? `${fl.x},${fl.y}` : ""),
       h("td", { class: "idx" }, o.fixed ? "" : String(o.obj)),
-      h("td", { style: "font-size:12.5px" }, texts.length ? h("span", { title: o.list }, texts.slice(0, 8).map((t) => String(t).replace(/\r/g, " ")).join(" · "), texts.length > 8 ? ` … (${texts.length})` : "")
-        : own.length ? h("span", {}, own.join(" / ")) : o.list ? h("small", { class: "muted mono" }, o.list.replace(/^List_GDO_/, "")) : "")));
+      h("td", { style: "font-size:12.5px" }, texts.length ? h("span", { title: o.list || "" }, texts.slice(0, 8).map((t) => String(t).replace(/\r/g, " ")).join(" · "), texts.length > 8 ? ` … (${texts.length})` : "")
+        : nimg ? h("span", { class: "muted" }, `${nimg} picture${nimg === 1 ? "" : "s"} to choose from`)
+        : own.length ? h("span", {}, own.slice(0, 8).join(o.lines ? " · " : " / ")) : o.list ? h("small", { class: "muted mono" }, o.list.replace(/^List_GDO_/, "")) : "")));
   }
   d.append(h("h3", {}, `${sc.objects.length} widgets`),
-    h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y"), h("th", {}, "object id"), h("th", {}, "texts / list"))), tb),
-    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the screen. Which items a list or menu really shows depends on the unit (the lists above are what the firmware attaches to this screen)."));
+    h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y in zone"), h("th", {}, "object id"), h("th", {}, "texts / list"))), tb),
+    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the display. Positions count from the top left corner of the zone. Which line, text or picture is shown, and whether a widget is visible at all, is decided by the unit while it runs: the lists are what the firmware attaches to this screen."));
 }
 
 function hilite(root, obj, on) {
-  for (const el of root.querySelectorAll(`.stage [data-obj="${obj}"]`)) el.classList.toggle("hl", on);
+  for (const el of root.querySelectorAll(`.stage .layer.own [data-obj="${obj}"]`)) el.classList.toggle("hl", on);
 }
 
-function screenStage(items, sc) {
+/** The 800x480 display with screen `sc` in its zone and the `others` around it, bottom zone first. */
+function displayStage(sc, others) {
   const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
   const bg = state.settings && state.settings.background;
+  const order = (s) => (s.zone_info ? s.zone_info.order : 99);
+  const layers = [sc, ...others.filter((o) => o.id !== sc.id)].sort((a, b) => order(a) - order(b)).map((s) => ({ s, items: layerItems(s), show: true }));
   const wrap = h("div", { class: "stage-wrap" });
   const stage = h("div", { class: "stage", style: `width:${scr.width}px;height:${scr.height}px` });
   const showBg = h("input", { type: "checkbox", checked: state.stageBg !== false, title: "the theme's first background under everything" });
+  const alone = h("input", { type: "checkbox", checked: !!state.stageAlone, title: "hide the other zones" });
+  const lines = h("input", { type: "checkbox", checked: !!state.stageZones, title: "outline and name every zone" });
+  const marks = h("input", { type: "checkbox", checked: !!state.stageMarks, title: "outline every picture and text" });
   const draw = () => {
     stage.innerHTML = "";
-    const hasOwnBg = items.some((it) => it.type === "img" && it.x === 0 && it.y === 0 && it.w >= scr.width && it.h >= scr.height);
-    if (showBg.checked && bg && !hasOwnBg) stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + (state.rev[bg.file] || 0), alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
-    paintItems(stage, items, 0, 0, bg ? state.rev[bg.file] || 0 : 0);
+    stage.classList.toggle("plain", !marks.checked);
+    const rev = bg ? state.rev[bg.file] || 0 : 0;
+    if (showBg.checked && bg) stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + rev, alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
+    for (const L of layers) {
+      const own = L.s === sc;
+      if (!own && (alone.checked || !L.show)) continue;
+      const [x, y, w, hh] = L.s.rect;
+      const box = h("div", { class: "layer" + (own ? " own" : "") + (lines.checked ? " outlined" : ""), "data-screen": L.s.id,
+        style: `left:${x}px;top:${y}px;width:${w}px;height:${hh}px` });
+      paintItems(box, L.items, 0, 0, rev);
+      if (lines.checked) box.append(h("span", { class: "layer-tag" }, `${L.s.zone_name || "?"} · ${L.s.name || L.s.id}`));
+      stage.append(box);
+    }
   };
   showBg.onchange = () => { state.stageBg = showBg.checked; draw(); };
+  alone.onchange = () => { state.stageAlone = alone.checked; draw(); };
+  lines.onchange = () => { state.stageZones = lines.checked; draw(); };
+  marks.onchange = () => { state.stageMarks = marks.checked; draw(); };
   draw();
   wrap.append(stage);
   let scale = 1;
@@ -447,11 +535,34 @@ function screenStage(items, sc) {
   requestAnimationFrame(fit);
   window.addEventListener("resize", fit);
   const big = h("button", { class: "small", onclick: () => { const clone = stage.cloneNode(true); clone.style.transform = ""; modal(h("div", {}, h("h2", {}, `${sc.name || "screen " + sc.id} (1:1)`), h("div", { class: "stage-wrap big" }, clone), h("div", { class: "modal-actions" }, h("button", { onclick: closeModal }, "Close")))); } }, "1:1");
-  const sample = items.some((it) => it.type === "text" && it.placeholder)
+  const sample = layers.some((L) => L.items.some((it) => it.type === "text" && it.placeholder))
     ? h("input", { type: "text", value: state.sampleText || SAMPLE_TEXT, title: "sample text for texts the unit fills in at runtime", style: "width:150px",
         oninput: (e) => { state.sampleText = e.target.value; draw(); } }) : null;
+  // what is on the display: one row per zone, bottom first
+  const setLayers = (ids) => { state.layers[sc.id] = ids; showDetail(); };
+  const rows = h("tbody");
+  for (const L of layers) {
+    const own = L.s === sc, zi = L.s.zone_info;
+    const vis = h("input", { type: "checkbox", checked: true, disabled: own, onchange: (e) => { L.show = e.target.checked; draw(); } });
+    rows.append(h("tr", { class: own ? "own" : "" },
+      h("td", {}, vis),
+      h("td", {}, h("span", { class: "zone-tag role-" + (zi ? zi.role : "") }, L.s.zone_name || "?"), " ", h("small", { class: "muted" }, zi ? zi.title : "")),
+      h("td", {}, own ? h("b", {}, sc.name || `screen ${sc.id}`) : h("span", { class: "link", onclick: () => go(null, "screens", L.s.id) }, L.s.name || `screen ${L.s.id}`), h("small", { class: "muted mono" }, ` ${L.s.id}`)),
+      h("td", {}, own ? h("small", { class: "muted" }, "this screen") : h("button", { class: "small", title: "take this zone off the display", onclick: () => setLayers(state.layers[sc.id].filter((x) => x !== L.s.id)) }, "✕"))));
+  }
+  const add = h("select", { onchange: (e) => {
+    const nid = +e.target.value, nz = (state.screens.find((r) => r.id === nid) || {}).zone;
+    const keep = layers.filter((L) => L.s !== sc && L.s.zone !== nz).map((L) => L.s.id);   // one screen per zone
+    setLayers([...keep, nid]);
+  } }, h("option", { value: "" }, "Add or replace a zone…"),
+    ...zoneList().map((z) => h("optgroup", { label: `${z.name}: ${z.title}` },
+      ...(state.screens || []).filter((r) => r.zone === z.id && r.id !== sc.id).map((r) => h("option", { value: r.id }, `${r.id} ${r.name || "(no name)"}`)))));
+  const reset = h("button", { class: "small", title: "back to the zones proposed for this screen", onclick: () => { delete state.layers[sc.id]; showDetail(); } }, "Reset");
   return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
-    h("label", {}, h("span", {}, showBg, " theme background")), sample, big), wrap);
+      h("label", {}, h("span", {}, showBg, " theme background")), h("label", {}, h("span", {}, alone, " this zone only")), h("label", {}, h("span", {}, lines, " zone outlines")), h("label", {}, h("span", {}, marks, " widget outlines")), sample, big), wrap,
+    h("table", { class: "items layers" }, rows),
+    h("div", { class: "row" }, add, reset),
+    h("p", { class: "muted", style: "font-size:12px;margin-top:2px" }, "The zones around this screen are a proposal: the top band and, under a menu or popup, the main screen of the same function. The unit decides while it runs what it really combines."));
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +764,7 @@ function detailTexture(d, f, i, item) {
 
 function detailOther(d, f, s, i, item) {
   const fl = item.fields, r = item.resolved || {};
-  if (STAGED.has(s.slice(0, 4))) d.append(stageBlock(f, s, i, fl, r));
+  if (STAGED.has(s.slice(0, 4))) d.append(stageBlock(f, s, i, fl, r, item.screens));
   const geo = ["level", "x", "y", "text_width", "text_dx", "text_dy", "visible_width", "visible_height", "width", "height", "style", "alignment", "text_hor_alignment", "text_ver_alignment", "interline", "time", "blinking_period"]
     .filter((k) => fl[k] != null).map((k) => `${k}=${fl[k]}`).join("  ");
   if (geo) d.append(h("p", { class: "mono muted", style: "font-size:12px" }, geo));
@@ -723,7 +834,9 @@ function resolvedBlock(resolved) {
 const SAMPLE_TEXT = "Beispiel 12:34";
 const STAGED = new Set(["BKGD", "FXPI", "VRPI", "DYPI", "ITXT", "DTXT", "FXTX", "FBTN", "CBTN", "DBTN", "DCBT", "ICBT", "MCTX", "EDTX", "MENU", "IMEN", "LIST", "EDTB", "VWTX", "FBAR", "SEBR", "CRZO", "ACLK"]);
 
-function stageItems(section, f, r, stateNo = 0) {
+/** The drawable parts of one widget.  `extra` comes from a screen: `lines` (the texts of a menu's
+ *  lines), `images` + `pick` (the list of a variable picture and which one to show), `zoneH`. */
+function stageItems(section, f, r, stateNo = 0, extra = null) {
   const kind = section.slice(0, 4);
   const items = [];
   const first = (v) => (Array.isArray(v) ? (v[stateNo] || v.find(Boolean)) : v) || null;
@@ -731,27 +844,41 @@ function stageItems(section, f, r, stateNo = 0) {
   const box = (x, y, w, h, label) => items.push({ type: "box", x, y, w: w || 48, h: h || 24, label });
   const fontH = (res) => (res && res.kind === "font" && res.height) ? Math.max(8, Math.round(res.height * (res.scale || 1000) / 1000)) : 20;
   const colorOf = (res) => (res && res.kind === "color" ? "#" + res.hex.slice(0, 6) : "#ffffff");
-  const textOf = (res) => (res && res.kind === "text_index" && res.texts.find((t) => t != null)) || null;
+  // `res` is a resolved text index, or the text itself (a menu line named by the screen)
+  const textOf = (res) => (typeof res === "string" ? res : (res && res.kind === "text_index" && res.texts.find((t) => t != null)) || null);
   const text = (x, y, w, res, color, font, label, align) => items.push({ type: "text", x, y, w: w || 120, h: fontH(font), text: textOf(res) || label, color: colorOf(color),
     hex: color && color.kind === "color" ? color.hex : "ffffffff", font: font && font.kind === "font" ? font.index : null,
     interline: f.interline || 0, align: align != null ? align : (f.text_hor_alignment != null ? f.text_hor_alignment : 0), placeholder: !textOf(res), label });
   // buttons and menus: text_dx is an anchor inside the image. alignment 0 = centred on it (factory
   // files have text_dx = image width / 2), 1 = starts there (text_dx 7..10, 45 after a check box), 2 = ends there (assumed)
-  const anchored = (ax, ay, w, res, color, font, label, align) => {
-    const bw = w || 200;
+  // texts work the same, also vertically (the clock's hours end at x=60, the colon starts at 62; of the
+  // texts with alignment 0, 88% fit their zone when centred on x and 28% when started there; FORMAT.md §8.4)
+  const anchored = (ax, ay, w, res, color, font, label, align, valign = 1) => {
+    const bw = w || 200, fh = fontH(font);
     const left = align === 0 ? ax - Math.round(bw / 2) : align === 2 ? ax - bw : ax;
-    text(left, ay, bw, res, color, font, label, align === 0 ? 1 : align === 2 ? 2 : 0);
+    const top = valign === 0 ? ay - Math.round(fh / 2) : valign === 2 ? ay - fh : ay;
+    text(left, top, bw, res, color, font, label, align === 0 ? 1 : align === 2 ? 2 : 0);
+    items[items.length - 1].valign = valign;
   };
   const x = f.x || 0, y = f.y || 0;
   switch (kind) {
     case "BKGD": case "FXPI": img(r.image, x, y); break;
-    case "VRPI": box(x, y, 48, 48, "variable picture"); break;
+    case "VRPI": {
+      // the screen's list says which pictures it can be; without a screen there is nothing to show
+      const list = (extra && extra.images) || [], k = (extra && extra.pick) || 0;
+      const before = items.length;
+      if (!img(list[k], x, y, `variable picture ${k + 1} of ${list.length}${list.length > 1 ? " (click for the next)" : ""}`)) box(x, y, 48, 48, list.length ? `variable picture ${k + 1} of ${list.length}: empty` : "variable picture");
+      if (list.length > 1) items[before].cycle = true;
+      break;
+    }
     case "DYPI": box(0, 0, f.width, f.height, "dynamic picture"); img(r.image, 0, 0); break;
     case "ITXT": case "DTXT": case "FXTX":
       // the background sits at x - offset: DTXT 002C has a 536x48 background with offset (8,10) around a 512 wide
       // text, ITXT 003E a 280 wide one with offset 176 at x=696, which ends exactly at the screen edge
       if (f.has_background || r.background) img(r.background, x - (f.bg_h_offset || 0), y - (f.bg_v_offset || 0), "background (x/y minus bg offset)");
-      text(x, y, f.text_width, r.text_index, r.text_color, r.font, kind === "ITXT" ? "indexed text" : kind === "DTXT" ? "dynamic text" : "fixed text");
+      // FXTX keeps both alignments in style: vertical << 4 | horizontal
+      anchored(x, y, f.text_width, r.text_index, r.text_color, r.font, kind === "ITXT" ? "indexed text" : kind === "DTXT" ? "dynamic text" : "fixed text",
+        f.text_hor_alignment != null ? f.text_hor_alignment : (f.style || 0) & 15, f.text_ver_alignment != null ? f.text_ver_alignment : (f.style || 0) >> 4);
       break;
     case "FBTN": case "CBTN": case "DBTN": case "DCBT": case "ICBT": case "MCTX": case "EDTX": {
       const im = img(first(r.images), x, y, `state ${stateNo} image`);
@@ -764,9 +891,17 @@ function stageItems(section, f, r, stateNo = 0) {
     case "MENU": case "IMEN": {
       img(r.image, x, y, "menu image");
       img(r.cursor_image, x, y, "cursor image");
+      // one line is as high as the cursor image, with space_evenly between lines: the factory menus
+      // then fill their zone (5 lines of 48 + 12 from y=150 end at 438 of 480)
+      const cur = r.cursor_image && r.cursor_image.kind === "image" ? r.cursor_image : null;
       const fh = fontH(r.font), col = first(r.text_colors);
-      const texts = (r.texts || []).length ? r.texts : [null];
-      texts.forEach((t, n) => anchored(x + (f.text_dx || 0), y + (f.text_dy || 0) + n * Math.round(fh * 1.4), f.text_width || 300, t, col, r.font, `item ${n}`, f.text_alignment || 0));
+      const lineH = cur ? cur.height : Math.round(fh * 1.2), pitch = lineH + (f.space_evenly || 0);
+      const own = r.texts || [];
+      // a screen names the lines (its own text list per line, else the menu's texts); alone, show the menu's
+      let lines = extra && extra.lines ? extra.lines.map((t, n) => t || own[n] || null)
+        : own.length ? own : Array.from({ length: f.item_count || 1 }, () => null);
+      if (extra && extra.zoneH) lines = lines.slice(0, Math.max(1, Math.floor((extra.zoneH - y + (f.space_evenly || 0)) / pitch)));  // what fits; the rest scrolls
+      lines.forEach((t, n) => anchored(x + (f.text_dx || 0), y + n * pitch + Math.max(0, Math.round((lineH - fh) / 2)) + (f.text_dy || 0), f.text_width || (cur ? cur.width : 300), t, col, r.font, `line ${n + 1}`, f.text_alignment || 0));
       break;
     }
     case "LIST":
@@ -798,14 +933,16 @@ function stageItems(section, f, r, stateNo = 0) {
 /** Draw stage items (from stageItems) into a stage element, shifted by ox/oy screen pixels. */
 function paintItems(stage, items, ox, oy, rev) {
   for (const it of items) {
-    const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px`;
+    const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px` + (it.onclick ? ";cursor:pointer" : "");
     const attrs = it.obj != null ? { "data-obj": it.obj } : {};
+    if (it.onclick) attrs.onclick = it.onclick;
     if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + "&v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));
     else if (it.type === "text") {
-      const txt = it.placeholder ? (state.sampleText || SAMPLE_TEXT) : it.text;
+      // a sample for what the unit fills in; short fields (hours, a temperature) get a short one
+      const txt = it.placeholder ? (state.sampleText || (it.w < 120 ? "12" : it.w < 200 ? "12:34" : SAMPLE_TEXT)) : it.text;
       const just = ["flex-start", "center", "flex-end"][it.align] || "flex-start";
       const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : ""}`,
-        style: `${st};justify-content:${just};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px`, ...attrs });
+        style: `${st};justify-content:${just};align-items:${["center", "flex-start", "flex-end"][it.valign != null ? it.valign : 1] || "flex-start"};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px`, ...attrs });
       if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
         src: `/api/render.png?font=${it.font}&text=${encodeURIComponent(txt)}&color=${it.hex}&interline=${it.interline}` }));
       else box.append(txt);
@@ -815,7 +952,10 @@ function paintItems(stage, items, ox, oy, rev) {
   }
 }
 
-function stageBlock(fid, section, index, fields, resolved) {
+function stageBlock(fid, section, index, fields, resolved, screens) {
+  // a widget's position counts from the corner of the zone of the screen it is on (the background's is absolute)
+  const home = !section.startsWith("BKGD") && screens && screens.length ? screens[0] : null;
+  const [zx, zy, zw, zh] = home ? home.rect : [0, 0, 0, 0];
   const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
   const bg = state.settings && state.settings.background;
   const wrap = h("div", { class: "stage-wrap" });
@@ -839,7 +979,9 @@ function stageBlock(fid, section, index, fields, resolved) {
     if (showBg.checked && bg && !(section.startsWith("BKGD") && fields.x === 0 && fields.y === 0 && resolved.image && resolved.image.index === bg.index)) {
       stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + (state.rev[bg.file] || 0), alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
     }
-    paintItems(stage, items, moved ? moved.dx : 0, moved ? moved.dy : 0, state.rev[bg ? bg.file : 0] || 0);
+    if (home) stage.append(h("div", { class: "layer outlined", style: `left:${zx}px;top:${zy}px;width:${zw}px;height:${zh}px;overflow:visible;pointer-events:none` },
+      h("span", { class: "layer-tag" }, `${home.zone_name || "?"} · ${home.name || home.id}`)));
+    paintItems(stage, items, zx + (moved ? moved.dx : 0), zy + (moved ? moved.dy : 0), state.rev[bg ? bg.file : 0] || 0);
   };
   showBg.onchange = () => { state.stageBg = showBg.checked; draw(); };
   if (stateSel) stateSel.onchange = () => { items = stageItems(section, fields, resolved, +stateSel.value); draw(); };
@@ -878,7 +1020,9 @@ function stageBlock(fid, section, index, fields, resolved) {
     h("label", {}, h("span", {}, showBg, " screen background")), sample, stateSel, big), wrap,
     h("div", { class: "row" }, h("label", {}, "position"), posX, "×", posY,
       movable ? h("button", { class: "small", onclick: applyPos }, "Apply") : null,
-      h("small", { class: "muted" }, movable ? "drag the widget on the screen, or type x/y" : "this item has no x/y")));
+      h("small", { class: "muted" }, movable ? "drag the widget on the screen, or type x/y" : "this item has no x/y")),
+    home ? h("p", { class: "muted", style: "font-size:12px;margin:2px 0 0" }, `Drawn in zone ${home.zone_name || "?"} of `, h("span", { class: "link", onclick: () => go(null, "screens", home.id) }, home.name || `screen ${home.id}`),
+      `: x/y count from the corner of that zone (${zx},${zy}).`) : null);
 }
 
 function rawJson(f, s, i, item, open) {
