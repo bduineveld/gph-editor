@@ -36,6 +36,10 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
   piece of the top band, the main area, a menu panel, a popup …): the editor draws it in
   its place together with the zones the unit shows around it, and you can swap those to
   compose a complete picture (`docs/FORMAT.md` §8).
+* **Unit screenshots**: the unit can dump the picture on its display itself (a very long press
+  on the audio settings key or `NAV` collects its "spies"; spy 21403 is the display as a TGA).
+  `gph spy-screenshot` turns those dumps into PNG, to compare the real screens with the editor
+  (`docs/FORMAT.md` §9).
 * Not yet tried on a real unit.
 
 ## Install
@@ -143,6 +147,10 @@ the old ones are shared with other images (`--share` overwrites anyway).
 `VER`).  Indexes are decimal or `0x..`, as `gph dump` prints them in hex.  In texts `\n`
 is a line break (the unit uses U+000D).  Count fields (`image_count` ...) follow the lists
 automatically.
+
+```bash
+gph spy-screenshot /Volumes/USB/SPY -o shots/  # the unit's own screen dumps (spy 21403) -> PNG
+```
 
 ## Library
 

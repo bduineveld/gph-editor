@@ -1,7 +1,7 @@
 """Command line interface.
 
 Inspect: ``gph info|dump|check|roundtrip|export``.  Edit: ``gph set-text|set-color|set|import|save``.
-Side-car: ``gph inf verify|write``.  Web UI: ``gph serve``.
+Side-car: ``gph inf verify|write``.  Web UI: ``gph serve``.  Unit screenshots: ``gph spy-screenshot``.
 """
 
 from __future__ import annotations
@@ -421,6 +421,24 @@ def cmd_screens_names(args):
     return 0
 
 
+def cmd_spy_screenshot(args):
+    """Turn the unit's spy 21403 dumps into PNG pictures."""
+    from .spy import convert, spy_files
+    rc = 0
+    for p in args.paths:
+        if not spy_files(p):
+            print(f"{p}: no spy files (*.bin.gz) found", file=sys.stderr)
+            rc = 1
+            continue
+        written = convert(p, args.out)
+        if not written:
+            print(f"{p}: no picture in the spy files", file=sys.stderr)
+            rc = 1
+        for w in written:
+            print(w)
+    return rc
+
+
 def cmd_serve(args):
     from .server import serve
     public = args.public or os.environ.get("GPH_PUBLIC") == "1"
@@ -566,6 +584,12 @@ def main(argv=None):
     s.add_argument("--mmi", help="Application/MMI folder (default: found next to the GraphicBase)")
     s.add_argument("-o", "--out", help="output file (default: <graphicbase>.names.json)")
     s.set_defaults(fn=cmd_screens_names)
+
+    s = sub.add_parser("spy-screenshot", help="convert the unit's own screen dumps (spy 21403, copied from /SDI/SPY/21403) "
+                       "to PNG")
+    s.add_argument("paths", nargs="+", help="spy files (*.bin.gz) or a folder that holds them, e.g. the SPY folder of the USB stick")
+    s.add_argument("-o", "--out", help="folder for the PNG files (default: next to each spy file)")
+    s.set_defaults(fn=cmd_spy_screenshot)
 
     s = sub.add_parser("serve", help="open the web UI (local editor in the browser)")
     s.add_argument("paths", nargs="*", help="GPH files or folders to open at start")

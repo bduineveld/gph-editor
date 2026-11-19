@@ -432,7 +432,63 @@ there.  This is the convention of the buttons (`alignment`, §3.2).  `FXTX2006` 
 alignment fields: its `style` byte is `vertical << 4 | horizontal` (0x10 centred, 0x11
 starts at x, 0x12 ends at x).
 
-## 9. Open questions
+## 9. Screenshots and hidden codes of the unit
+
+Read from the 2.80 firmware; nothing in this section has been tried on a unit yet.
+
+### 9.1 Key commands
+
+The front panel module (`BCM/fp_network`, class `C_KEYBOARD`) turns every key into a *key command*:
+`8 x key number + 1 + press type`, with press type 0 `SIMPLE`, 1 `SHORT`, 2 `LONG`, 3 `LONG2`,
+4 `REPEAT`, 5 `REPEAT2`, 6 `REPEAT3`, 7 `STOP_REPEAT`.  Each panel type (`FMUX`, `T5`, `D2`,
+`DPCA`, `MERCO`) has a table from its own key index to the key number.  `BCM/cum`
+(`HandleKbdEvent_*`) turns key commands into events for the screen modules; the module that
+receives the short press tells which key it is:
+
+| key | short press goes to | so it is |
+|---|---|---|
+| 2 | source manager; long press: `SendDarkWakeUP` | `MODE` / dark |
+| 6 | `MMI/audio`, "next audio parameter" | the audio settings key |
+| 80 | `MMI/nav` | `NAV` |
+| 81 | `MMI/tmc` | `TRAFFIC` |
+
+### 9.2 Collecting the spies
+
+Every module can keep a "spy" (a log buffer) under its own number.  `BCM/cum` raises event 21201
+when key command 0x34 (key 6, `LONG2`) or 0x284 (key 80, `LONG2`) arrives: a very long press on the
+audio settings key or on `NAV`.  `BCM/spy` then ("collect of spy asked by user") lets all modules
+save their status, writes every spy to `/SDI/SPY/<number, 5 digits>/<name>.bin.gz` (plain gzip),
+saves the user profile files and a dump of the system database, beeps, and signals the system
+module; the log text says the unit restarts after that.  How long `LONG2` is, is decided by the
+panel and not found in this firmware.
+
+### 9.3 Spy 21403: the picture on the display
+
+At a collect the graphics driver (`DRV_GPH`, `C_VideoOut::SaveStatus`) reads the frame buffer
+(RGB565, mixed with the video layer where there is one) and writes it as spy 21403: an
+uncompressed TGA, 18-byte header (`00 00 02`, nine zero bytes, width and height little endian,
+`20` = 32 bits, `2F` = top line first) followed by width x height pixels B, G, R, 255.  For the
+800 x 480 display that is 1 536 018 bytes.
+
+`gph spy-screenshot <file or folder>` converts these files to PNG (`gph.spy`).  Getting them off
+the unit: a script on a USB stick that copies `/SDI/SPY/21403` (the community's `SPY21403.CMD`), or
+the hidden code `SPYSTORE`, which copies the spies to `/SPY_RESULT/taken_<nn>_<date>` on the stick.
+
+### 9.4 Hidden codes
+
+`BCM/cheat_code` holds the table `C_BCM_Cheat_Code::m_code_db`: 70 entries of 12 bytes (pointer to
+the code, event number, pointer to a comment); `tools/firmware/cheatcodes.py` lists them.  A module
+subscribes to an event number and asks for the text typed after the code
+(`GetCheatCodeParam`).  Codes starting with `##` are spelled on a phone keypad: `##779362` is
+`##SPYENA`.  For the spies: `##779362<number>` enables a spy, `##779347<number>` disables it,
+`SPYCLN` deletes the stored spies, `SPYSTORE` copies them to USB.  There is no code that makes a
+screenshot; the picture only comes with a collect (§9.2).
+
+The codes are typed on the screen `C_CHEAT_Capture_Z1_0` of `MMI/cheat_code` (a virtual keyboard;
+"capture" is the capture of the text).  It opens on event 60, which `BCM/cum` sends for key
+command 60 (key 7, `LONG2`); which key of the panel that is has not been worked out.
+
+## 10. Open questions
 
 * Meaning of the stamp bytes (§2.1) and whether the unit validates them.
 * `FBAR2000` bytes 56..59 (`FF FF FF FF`) and the element type of its third (always null) table.
@@ -443,3 +499,5 @@ starts at x, 0x12 ends at x).
   `unit_dependance`.
 * Screens: which zones the unit combines when (code in `MGR_DIS`/`BCM_MENU`), the second flags
   byte, what `Z2` is used for, and which text colour a selected or disabled menu line gets.
+* Unit screenshots (§9): which panel key is key 7 (opens the code screen), how long `LONG2` is, and
+  whether a collect really ends with a restart.
