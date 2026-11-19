@@ -399,8 +399,16 @@ y=150 end at 438 of 480; the list symbols call such a menu `menu_5l`), and longe
 scroll.
 
 A variable picture (`VRPI2000`) has no image of its own: its list holds the `IMAG2000`
-indexes it can show.  Objects that share an object id belong together (a menu and the
-`VRPI` frame around it).
+indexes it can show, one at a time.  It is a choice, not an animation: the screen module sets
+the number of the picture (`C_COL_NIO::ChangeIndex(int)`, in the graphics library
+`C_GOL_VARPICT::ChangePictureIndex`) and hides or shows the widget separately (`SetInvisible`).
+Which number stands for what is in the module's code, not in the data; the name of the list
+is the hint (`vp_mute_z0`, `vp_ta_3idx_z0`, `..._antenne` with one picture per reception
+level).  Of the 571 variable pictures on the 2.80 screens most have 2 or 3 pictures (up to
+22), and 469 start with a fully transparent picture: number 0 is "nothing to show".  An entry
+can itself be an animation, an `IMAG2000` with several pictures and a `time` (23 of the listed
+images, 2 to 6 pictures at 250 to 1000 ms, such as the wait sign).  Objects that share an
+object id belong together (a menu and the `VRPI` frame around it).
 
 ### 8.3 Names
 

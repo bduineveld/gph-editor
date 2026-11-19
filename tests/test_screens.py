@@ -228,6 +228,12 @@ def test_real_zone_rectangles():
     assert rect(965) == [0, 72, 800, 408]     # the map zone: its background is a 4x4 dummy
     d = ed.screen_detail(40)
     assert [ln["obj"] for ln in d["objects"][2]["lines"]] == [240311, 240313]
+    # variable pictures: the list of the mute sign is an empty picture and the sign, the tuner's wait sign is an animation
+    lists = lambda sid: {o["list"]: o["list_images"] for o in ed.screen_detail(sid)["objects"] if o.get("list_images")}
+    mute = lists(47)["List_GDO_vp_mute_z0"]
+    assert [(im["index"], im["blank"]) for im in mute] == [(467, True), (590, False)]
+    wait = lists(46)["List_GDO_vp_TUNER_C6_3_Z1_0_wait"][1]
+    assert (wait["frames"], wait["time"], wait["blank"]) == (4, 250, False) and wait["gif"].endswith("/image/5.gif")
     item = ed.item_detail(ed._of_for(ed.workspace().common), "MENU2006", 15)
     assert item["screens"] == [{"id": 40, "name": d["name"], "zone": 0x16, "zone_name": "Z4_1", "rect": [150, 72, 496, 336]}]
 

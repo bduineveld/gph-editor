@@ -534,7 +534,7 @@ class Editor:
             elif o.values and o.section in TEXT_LIST_SECTIONS:
                 j["list_texts"] = list_texts(o)
             elif o.values and o.section == "VRPI2000":
-                j["list_images"] = [self._resolve_link(ws, "image", Link("GEN ", v)) for v in o.values]
+                j["list_images"] = [self._list_image(ws, v) for v in o.values]
             lines = [ln for ln in sc.objects if ln.menu == n]
             if lines:
                 j["lines"] = [{"obj": ln.obj_id, "list": ln.list_name, "texts": list_texts(ln)} for ln in lines]
@@ -545,6 +545,20 @@ class Editor:
                  family=[self._screen_ref(i) for i in self.screens.family(sid)],
                  companions=[self._screen_ref(i) for i in self.screens.companions(sid)])
         return d
+
+    def _list_image(self, ws: Workspace, index: int) -> dict:
+        """One entry of a variable picture's list: the image, and whether there is anything to see in it."""
+        r = self._resolve_link(ws, "image", Link("GEN ", index)) or {"module": "GEN", "index": index, "kind": "missing", "what": "image"}
+        if r["kind"] == "image":
+            of = self.files.get(r["file"])
+            key = ("blank", index)
+            if of is not None and key not in of._png:
+                try:   # fully transparent: the software uses such an entry to show nothing
+                    of._png[key] = self.image_frame(of, index, 0).convert("RGBA").getchannel("A").getextrema()[1] == 0
+                except (ApiError, KeyError, ValueError):
+                    of._png[key] = False
+            r["blank"] = bool(of is not None and of._png[key])
+        return r
 
     def where_used(self, of: OpenFile, image_index: int) -> list[str]:
         """Widgets in the open files whose image links point at this IMAG item (best effort)."""

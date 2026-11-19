@@ -35,7 +35,8 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
   for each widget on which screens it appears.  A screen is one *zone* of the display (a
   piece of the top band, the main area, a menu panel, a popup …): the editor draws it in
   its place together with the zones the unit shows around it, and you can swap those to
-  compose a complete picture (`docs/FORMAT.md` §8).
+  compose a complete picture (`docs/FORMAT.md` §8).  For every variable picture you choose
+  which picture of its list the display shows; animations play.
 * **Unit screenshots**: the unit can dump the picture on its display itself (a very long press
   on the audio settings key or `NAV` collects its "spies"; spy 21403 is the display as a TGA).
   `gph spy-screenshot` turns those dumps into PNG, to compare the real screens with the editor

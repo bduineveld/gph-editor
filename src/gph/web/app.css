@@ -184,3 +184,14 @@ table.screen-objects tr.line td { color: var(--fg2); padding-top: 2px; padding-b
 .stage.plain .stage-img, .stage.plain .stage-text { outline: none; }
 .stage.plain .stage-box { outline-color: rgba(76,195,138,.35); }
 .stage.plain .stage-box span { display: none; }
+
+/* variable pictures: choose which picture of the list the display shows */
+.vp-pick select { max-width: 260px; }
+.vp-thumbs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.vp-thumb { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 34px; padding: 2px 3px; border-radius: 4px;
+  background: #1d2430; border: 2px solid transparent; cursor: pointer; }
+.vp-thumb img { max-width: 72px; max-height: 30px; image-rendering: pixelated; }
+.vp-thumb.none { background: var(--bg3); color: var(--fg2); }
+.vp-thumb.anim { box-shadow: inset 0 -3px 0 var(--accent); }
+.vp-thumb:hover { border-color: var(--fg2); }
+.vp-thumb.on { border-color: var(--accent); }

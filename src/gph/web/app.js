@@ -422,16 +422,34 @@ const OBJ_KIND = { BKGD: "background", FXPI: "fixed picture", VRPI: "variable pi
   FBTN: "button", CBTN: "check button", DBTN: "dynamic button", DCBT: "dynamic check button", ICBT: "indexed check button", MENU: "menu", IMEN: "indexed menu",
   LIST: "list", MCTX: "multiple choice", EDTX: "edited text", EDTB: "keyboard", VWTX: "view text", FBAR: "bar", SEBR: "selectable bar", CRZO: "crossroad zoom" };
 
-/** Stage items of one screen, positioned inside its zone (the background sits at 0,0). */
-function layerItems(sc) {
+/** Which picture of a variable picture (object number `n` of screen `sid`) the display shows: the one picked,
+ *  else the first with something to see (most lists start with an empty picture, the "off" state). */
+function pickOf(sid, n, list) {
+  const p = (state.picks[sid] || {})[n];
+  if (p != null) return p % list.length;
+  if (state.stageVarOff) return 0;
+  const k = list.findIndex((im) => im && im.kind === "image" && !im.blank);
+  return k < 0 ? 0 : k;
+}
+
+/** Text for one entry of a variable picture's list. */
+function listImageLabel(im, k) {
+  if (!im || im.kind !== "image") return `${k + 1}: empty slot`;
+  return `${k + 1}: ${im.module} ${hex4(im.index)} · ` + (im.blank ? "nothing (transparent)" : `${im.width}×${im.height}`)
+    + (im.frames > 1 ? ` · animation, ${im.frames} pictures × ${im.time} ms` : "");
+}
+
+/** Stage items of one screen, positioned inside its zone (the background sits at 0,0).
+ *  `onPick` is called after a click on a variable picture changed which picture it shows. */
+function layerItems(sc, onPick) {
   const items = [];
   const [zx, zy, , zh] = sc.rect;
   const picks = (state.picks[sc.id] = state.picks[sc.id] || {});
-  for (const o of sc.objects) {
+  for (const [n, o] of sc.objects.entries()) {
     if (!o.fields) continue;
     const extra = { zoneH: zh };
     if (o.lines) extra.lines = o.lines.map((ln) => (ln.texts || []).find((t) => t != null) || null);
-    if (o.list_images && o.list_images.length) { extra.images = o.list_images; extra.pick = (picks[o.obj] || 0) % o.list_images.length; }
+    if (o.list_images && o.list_images.length) { extra.images = o.list_images; extra.pick = pickOf(sc.id, n, o.list_images); }
     const its = stageItems(o.section, o.fields, o.resolved || {}, 0, extra);
     // indexed texts and buttons know their texts only through the screen's list: use the first
     if (!o.lines && o.list_texts && o.list_texts.length) {
@@ -442,7 +460,7 @@ function layerItems(sc) {
     for (const it of its) {
       if (abs) { it.x -= zx; it.y -= zy; }
       it.obj = o.obj; it.label = `${o.section.slice(0, 4)} ${hex4(o.index)} ${it.label}`;
-      if (it.cycle) it.onclick = () => { picks[o.obj] = (extra.pick + 1) % o.list_images.length; showDetail(); };
+      if (it.cycle) it.onclick = () => { picks[n] = (extra.pick + 1) % o.list_images.length; (onPick || showDetail)(); };
       items.push(it);
     }
   }
@@ -465,10 +483,30 @@ async function detailScreen(d, id) {
   if (!state.layers[id]) state.layers[id] = sc.companions.map((c) => c.id);
   const others = (await Promise.all(state.layers[id].map((oid) => api("GET", `/api/screens/${oid}`).catch(() => null)))).filter(Boolean);
   if (state.route.i !== id || state.route.s !== "screens") return;   // moved on while loading
-  d.append(displayStage(sc, others));
+  // a new choice for a variable picture redraws the display only
+  const syncs = [];
+  let stageEl;
+  const repaint = () => { const el = displayStage(sc, others, repaint); stageEl.replaceWith(el); stageEl = el; syncs.forEach((fn) => fn()); };
+  stageEl = displayStage(sc, others, repaint);
+  d.append(stageEl);
+  const rev = (fid) => state.rev[fid] || 0;
+  const picker = (n, o) => {
+    const list = o.list_images;
+    const choose = (k) => { (state.picks[sc.id] = state.picks[sc.id] || {})[n] = k; repaint(); };
+    const sel = h("select", { class: "small", title: "which picture the display above shows", onchange: (e) => choose(+e.target.value) },
+      ...list.map((im, k) => h("option", { value: k }, listImageLabel(im, k))));
+    const thumbs = h("span", { class: "vp-thumbs" }, ...list.map((im, k) => {
+      const see = im && im.kind === "image" && !im.blank;
+      return h("span", { class: "vp-thumb" + (see ? "" : " none") + (see && im.frames > 1 ? " anim" : ""), title: listImageLabel(im, k), onclick: () => choose(k) },
+        see ? h("img", { src: im.gif ? `${im.gif}?v=${rev(im.file)}` : `${im.url}&v=${rev(im.file)}`, loading: "lazy", alt: "" }) : h("small", {}, "–"));
+    }));
+    const sync = () => { const c = pickOf(sc.id, n, list); sel.value = c; [...thumbs.children].forEach((t, k) => t.classList.toggle("on", k === c)); };
+    syncs.push(sync); sync();
+    return h("div", { class: "vp-pick" }, h("div", {}, sel, o.list ? h("small", { class: "muted mono", title: "name of this list in the firmware" }, " " + o.list.replace(/^List_GDO_/, "")) : null), thumbs);
+  };
   // the widgets
   const tb = h("tbody");
-  for (const o of sc.objects) {
+  for (const [n, o] of sc.objects.entries()) {
     const sec = o.section ? o.section.slice(0, 4) : null;
     const fl = o.fields || {};
     const texts = (o.lines ? o.lines.map((ln) => (ln.texts || []).filter((t) => t != null).join(" / ") || null) : (o.list_texts || [])).filter((t) => t != null);
@@ -484,12 +522,12 @@ async function detailScreen(d, id) {
       h("td", { class: "idx" }, fl.x != null ? `${fl.x},${fl.y}` : ""),
       h("td", { class: "idx" }, o.fixed ? "" : String(o.obj)),
       h("td", { style: "font-size:12.5px" }, texts.length ? h("span", { title: o.list || "" }, texts.slice(0, 8).map((t) => String(t).replace(/\r/g, " ")).join(" · "), texts.length > 8 ? ` … (${texts.length})` : "")
-        : nimg ? h("span", { class: "muted" }, `${nimg} picture${nimg === 1 ? "" : "s"} to choose from`)
+        : nimg ? picker(n, o)
         : own.length ? h("span", {}, own.slice(0, 8).join(o.lines ? " · " : " / ")) : o.list ? h("small", { class: "muted mono" }, o.list.replace(/^List_GDO_/, "")) : "")));
   }
   d.append(h("h3", {}, `${sc.objects.length} widgets`),
     h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y in zone"), h("th", {}, "object id"), h("th", {}, "texts / list"))), tb),
-    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the display. Positions count from the top left corner of the zone. Which line, text or picture is shown, and whether a widget is visible at all, is decided by the unit while it runs: the lists are what the firmware attaches to this screen."));
+    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the display. Positions count from the top left corner of the zone. Which line, text or picture is shown, and whether a widget is visible at all, is decided by the unit while it runs: the lists are what the firmware attaches to this screen. A variable picture shows one picture of its list at a time; the software picks it by number (the first is usually an empty one, for \"off\"). Choose here which one the display above shows, or click the picture on the display."));
 }
 
 function hilite(root, obj, on) {
@@ -497,17 +535,19 @@ function hilite(root, obj, on) {
 }
 
 /** The 800x480 display with screen `sc` in its zone and the `others` around it, bottom zone first. */
-function displayStage(sc, others) {
+function displayStage(sc, others, onPick) {
   const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
   const bg = state.settings && state.settings.background;
   const order = (s) => (s.zone_info ? s.zone_info.order : 99);
-  const layers = [sc, ...others.filter((o) => o.id !== sc.id)].sort((a, b) => order(a) - order(b)).map((s) => ({ s, items: layerItems(s), show: true }));
+  const layers = [sc, ...others.filter((o) => o.id !== sc.id)].sort((a, b) => order(a) - order(b)).map((s) => ({ s, items: layerItems(s, onPick), show: true }));
   const wrap = h("div", { class: "stage-wrap" });
   const stage = h("div", { class: "stage", style: `width:${scr.width}px;height:${scr.height}px` });
   const showBg = h("input", { type: "checkbox", checked: state.stageBg !== false, title: "the theme's first background under everything" });
   const alone = h("input", { type: "checkbox", checked: !!state.stageAlone, title: "hide the other zones" });
   const lines = h("input", { type: "checkbox", checked: !!state.stageZones, title: "outline and name every zone" });
   const marks = h("input", { type: "checkbox", checked: !!state.stageMarks, title: "outline every picture and text" });
+  const varOff = h("input", { type: "checkbox", checked: !!state.stageVarOff, title: "show the first picture of every variable picture: for most that is an empty one, the state in which the unit shows nothing there",
+    onchange: (e) => { state.stageVarOff = e.target.checked; (onPick || showDetail)(); } });
   const draw = () => {
     stage.innerHTML = "";
     stage.classList.toggle("plain", !marks.checked);
@@ -559,7 +599,8 @@ function displayStage(sc, others) {
       ...(state.screens || []).filter((r) => r.zone === z.id && r.id !== sc.id).map((r) => h("option", { value: r.id }, `${r.id} ${r.name || "(no name)"}`)))));
   const reset = h("button", { class: "small", title: "back to the zones proposed for this screen", onclick: () => { delete state.layers[sc.id]; showDetail(); } }, "Reset");
   return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
-      h("label", {}, h("span", {}, showBg, " theme background")), h("label", {}, h("span", {}, alone, " this zone only")), h("label", {}, h("span", {}, lines, " zone outlines")), h("label", {}, h("span", {}, marks, " widget outlines")), sample, big), wrap,
+      h("label", {}, h("span", {}, showBg, " theme background")), h("label", {}, h("span", {}, alone, " this zone only")), h("label", {}, h("span", {}, lines, " zone outlines")), h("label", {}, h("span", {}, marks, " widget outlines")),
+      layers.some((L) => L.s.objects.some((o) => o.list_images && o.list_images.length > 1)) ? h("label", {}, h("span", {}, varOff, " variable pictures off")) : null, sample, big), wrap,
     h("table", { class: "items layers" }, rows),
     h("div", { class: "row" }, add, reset),
     h("p", { class: "muted", style: "font-size:12px;margin-top:2px" }, "The zones around this screen are a proposal: the top band and, under a menu or popup, the main screen of the same function. The unit decides while it runs what it really combines."));
@@ -840,7 +881,7 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
   const kind = section.slice(0, 4);
   const items = [];
   const first = (v) => (Array.isArray(v) ? (v[stateNo] || v.find(Boolean)) : v) || null;
-  const img = (res, x, y, label) => { if (res && res.kind === "image") items.push({ type: "img", x, y, w: res.width, h: res.height, url: res.url, label: label || `${res.module} ${hex4(res.index)}` }); return res && res.kind === "image" ? res : null; };
+  const img = (res, x, y, label) => { if (res && res.kind === "image") items.push({ type: "img", x, y, w: res.width, h: res.height, url: res.gif || res.url, label: label || `${res.module} ${hex4(res.index)}` }); return res && res.kind === "image" ? res : null; };
   const box = (x, y, w, h, label) => items.push({ type: "box", x, y, w: w || 48, h: h || 24, label });
   const fontH = (res) => (res && res.kind === "font" && res.height) ? Math.max(8, Math.round(res.height * (res.scale || 1000) / 1000)) : 20;
   const colorOf = (res) => (res && res.kind === "color" ? "#" + res.hex.slice(0, 6) : "#ffffff");
@@ -867,7 +908,8 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
       // the screen's list says which pictures it can be; without a screen there is nothing to show
       const list = (extra && extra.images) || [], k = (extra && extra.pick) || 0;
       const before = items.length;
-      if (!img(list[k], x, y, `variable picture ${k + 1} of ${list.length}${list.length > 1 ? " (click for the next)" : ""}`)) box(x, y, 48, 48, list.length ? `variable picture ${k + 1} of ${list.length}: empty` : "variable picture");
+      const cur = list[k];
+      if (!img(cur, x, y, `variable picture ${k + 1} of ${list.length}${cur && cur.blank ? ": nothing" : ""}${cur && cur.frames > 1 ? ", animation" : ""}${list.length > 1 ? " (click for the next)" : ""}`)) box(x, y, 48, 48, list.length ? `variable picture ${k + 1} of ${list.length}: empty` : "variable picture");
       if (list.length > 1) items[before].cycle = true;
       break;
     }
@@ -936,7 +978,7 @@ function paintItems(stage, items, ox, oy, rev) {
     const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px` + (it.onclick ? ";cursor:pointer" : "");
     const attrs = it.obj != null ? { "data-obj": it.obj } : {};
     if (it.onclick) attrs.onclick = it.onclick;
-    if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + "&v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));
+    if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + (it.url.includes("?") ? "&" : "?") + "v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));
     else if (it.type === "text") {
       // a sample for what the unit fills in; short fields (hours, a temperature) get a short one
       const txt = it.placeholder ? (state.sampleText || (it.w < 120 ? "12" : it.w < 200 ? "12:34" : SAMPLE_TEXT)) : it.text;
