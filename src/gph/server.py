@@ -92,6 +92,32 @@ class ApiError(Exception):
 
 
 # ---------------------------------------------------------------------------
+
+def stretch_axis(img: Image.Image, new: int, mode: int, horizontal: bool) -> Image.Image:
+    """A picture brought to its display size along one axis, the way the unit does it.
+
+    Mode 1 ("third", ``C_Image::_CalcCoords`` in BCM_GPH): the picture is cut in three, each outer piece
+    ``floor(size / 3)`` wide; those keep their size and only the middle is stretched, so the ends of a bar
+    and the box of a check button stay as drawn.  Modes 0 and 4 stretch the whole picture.
+    """
+    old = img.width if horizontal else img.height
+    if new == old:
+        return img
+    size = (lambda n: (n, img.height)) if horizontal else (lambda n: (img.width, n))
+    box = (lambda a, b: (a, 0, b, img.height)) if horizontal else (lambda a, b: (0, a, img.width, b))
+    at = (lambda n: (n, 0)) if horizontal else (lambda n: (0, n))
+    t = old // 3
+    if mode != 1 or not t or new < 2 * t:
+        return img.resize(size(new), Image.NEAREST if mode == 0 else Image.BILINEAR)
+    img = img.convert("RGBA")
+    out = Image.new("RGBA", size(new))
+    out.paste(img.crop(box(0, t)), at(0))
+    if new > 2 * t:
+        out.paste(img.crop(box(t, old - t)).resize(size(new - 2 * t), Image.BILINEAR), at(t))
+    out.paste(img.crop(box(old - t, old)), at(new - t))
+    return out
+
+
 @dataclass
 class OpenFile:
     id: int
@@ -611,9 +637,8 @@ class Editor:
             img = self.image_frame(of, index, frame)
             if display:
                 fl = of.item("IMAG2000", index).fields
-                size = (max(1, fl["width"]), max(1, fl["height"]))
-                if size != img.size:
-                    img = img.resize(size, Image.NEAREST if fl["h_stretch"] == 0 else Image.BILINEAR)
+                img = stretch_axis(img, max(1, fl["width"]), fl["h_stretch"], True)
+                img = stretch_axis(img, max(1, fl["height"]), fl["v_stretch"], False)
             of._png[key] = _png(img)
         return of._png[key]
 

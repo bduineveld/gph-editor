@@ -345,3 +345,22 @@ def test_real_database():
         for o in sc.objects:
             if o.section in slots:
                 assert o.index < slots[o.section], (sc.id, o)
+
+
+def test_third_stretch_keeps_the_ends():
+    """Stretch mode 1 cuts a picture in three and stretches the middle only (C_Image::_CalcCoords)."""
+    from PIL import Image
+    from gph.server import stretch_axis
+    src = Image.new("RGBA", (9, 2), (0, 0, 0, 0))
+    for x, c in enumerate("RRRGGGBBB"):
+        src.putpixel((x, 0), {"R": (255, 0, 0, 255), "G": (0, 255, 0, 255), "B": (0, 0, 255, 255)}[c])
+    out = stretch_axis(src, 30, 1, True)
+    row = [out.getpixel((x, 0)) for x in range(30)]
+    assert out.size == (30, 2)
+    assert row[:3] == [(255, 0, 0, 255)] * 3 and row[-3:] == [(0, 0, 255, 255)] * 3
+    assert row[3:27] == [(0, 255, 0, 255)] * 24
+    # the other modes stretch everything; no change of size is no change at all
+    assert stretch_axis(src, 30, 0, True).getpixel((9, 0)) == (255, 0, 0, 255)
+    assert stretch_axis(src, 9, 1, True) is src
+    tall = stretch_axis(src.rotate(90, expand=True), 30, 1, False)
+    assert tall.size == (2, 30)

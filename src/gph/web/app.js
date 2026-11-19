@@ -965,7 +965,11 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
       const im = img(first(r.images), x, y, `state ${stateNo} image`);
       if (kind === "DBTN") img(r.arrow_image, x + (f.arrow_dx || 0), y + (f.arrow_dy || 0), "arrow");
       const col = first(r.text_colors) || first(r.not_selected_text_colors);
-      anchored(x + (f.text_dx || 0), y + (f.text_dy || 0), f.text_width || (im ? im.width : 0), r.text_index || first(r.text_indexes), col, r.font, kind.toLowerCase() + " text", f.alignment || 0);
+      // an indexed check button names its alignment like a text does, and its text width is 0xFFFF (no limit)
+      // in all 46 factory items: the text then runs from its anchor to the end of the picture
+      const al = f.alignment != null ? f.alignment : f.text_hor_alignment || 0;
+      const tw = f.text_width && f.text_width < 0xffff ? f.text_width : im ? im.width - (al === 1 ? f.text_dx || 0 : 0) : 0;
+      anchored(x + (f.text_dx || 0), y + (f.text_dy || 0), tw, r.text_index || first(r.text_indexes), col, r.font, kind.toLowerCase() + " text", al);
       if (kind === "EDTX") img(first(r.backgrounds), x, y, "background");
       break;
     }

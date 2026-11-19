@@ -183,8 +183,12 @@ Summary (after the 4 byte relocation header; `ptr→` = pointer to):
 | `IMAG2000` image | u8 flag, u8 image_count, u16 time_ms, u16 width, u16 height, u8 h_stretch, u8 v_stretch, pad2, ptr→ image_count × ptr→ {u32 width-1, u32 height-1, u16 texture slot, pad2} |
 | `PALE2000`, `TXUR2000`, `RAWD2000` | no content in our samples (`TXUR2000` is the RT4 texture format with power-of-two sizes) |
 
-`IMAG2000` flags: 0 none, 1 loop, 2 autostart, 3 loop+autostart.  Stretch: 0 direct,
-1 third, 4 bilinear.  `TXCO2000` slot meanings (from GPH_EDITOR): 0 popup/frame title,
+`IMAG2000` flags: 0 none, 1 loop, 2 autostart, 3 loop+autostart.  Stretch (per axis, used when the
+display size differs from the picture): 0 direct and 4 bilinear stretch the whole picture; 1 "third"
+cuts it in three, each outer piece `floor(size / 3)` pixels, keeps those at their size and stretches
+only the middle (`C_Image::_CalcCoords` in BCM_GPH builds three quads: 0…t-1, t…W-t-1, W-t…W-1).  That
+is how a 64 wide button picture becomes a 218 wide button with intact ends, and how the 256 wide
+picture of a check button, with its box at the left, becomes a 567 wide line.  `TXCO2000` slot meanings (from GPH_EDITOR): 0 popup/frame title,
 1 normal text, 3 highlighted/selected, 4 MP3 copy, 5 selected button, 6 not selectable,
 7 temperature and time, 0x12 map zoom value, 0x13 small left map window background.
 
@@ -422,6 +426,10 @@ buttons; `..._VolDist` does the same for the consumption group from the display
 configuration, and a fourth consumption button (object 90215, not in this database) is only
 used when `C_SETUP_MANUFACTURER::IsMaserati`.  So which widgets are visible is in the code of
 the screen's class, per car make and configuration, not in the data.
+
+An indexed check button (`ICBT2000`, type 38) is a check button whose text comes from the screen's
+list.  Its alignment fields are named like those of a text (`text_hor_alignment`, 1 = the text starts
+at `text_dx`, right of the box) and its `text_width` is 0xFFFF in all 46 factory items: no limit.
 
 A fixed text can be empty on purpose.  The date screens (`CLOCK_F3_Z0_3`, `…_Z5_2`) each carry
 three `FXTX2006` items of 57 wide next to day, month and year whose texts are empty in all
