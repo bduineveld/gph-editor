@@ -425,10 +425,10 @@ const OBJ_KIND = { BKGD: "background", FXPI: "fixed picture", VRPI: "variable pi
 
 /** Which picture of a variable picture (object number `n` of screen `sid`) the display shows: the one picked,
  *  else the first with something to see (most lists start with an empty picture, the "off" state). */
-function pickOf(sid, n, list) {
+function pickOf(sid, n, list, name) {
   const p = (state.picks[sid] || {})[n];
   if (p != null) return p % list.length;
-  if (state.stageVarOff) return 0;
+  if (state.stageVarOff || /sablier/i.test(name || "")) return 0;   // the wait sign ("sablier") is off unless the unit is busy
   const k = list.findIndex((im) => im && im.kind === "image" && !im.blank);
   return k < 0 ? 0 : k;
 }
@@ -461,16 +461,20 @@ function layerItems(sc, onPick) {
   const [zx, zy, , zh] = sc.rect;
   const picks = (state.picks[sc.id] = state.picks[sc.id] || {});
   const hidden = state.hidden[sc.id];
+  const turn = {};   // widgets that share one list of texts (the three band buttons: FM, DAB, AM) each take the next
   for (const [n, o] of sc.objects.entries()) {
     if (!o.fields || (hidden && hidden.has(n))) continue;
     const extra = { zoneH: zh };
     if (o.lines) extra.lines = o.lines.map((ln) => pickText(ln.texts));
-    if (o.list_images && o.list_images.length) { extra.images = o.list_images; extra.pick = pickOf(sc.id, n, o.list_images); }
+    if (o.list_images && o.list_images.length) { extra.images = o.list_images; extra.pick = pickOf(sc.id, n, o.list_images, o.list); }
     const its = stageItems(o.section, o.fields, o.resolved || {}, 0, extra);
     // indexed texts and buttons know their texts only through the screen's list: use the first
     if (!o.lines && o.list_texts && o.list_texts.length) {
       const texts = its.filter((it) => it.type === "text");
-      texts.forEach((it, n) => { const t = texts.length > 1 && o.list_texts[n] != null ? o.list_texts[n] : pickText(o.list_texts); if (t != null && (it.placeholder || it.empty)) { it.text = t; it.placeholder = it.empty = false; } });
+      const key = !o.line && o.values && o.values.length > 1 ? o.section + ":" + o.values.join(",") : null;
+      const k = key ? (turn[key] = (turn[key] ?? -1) + 1) : 0;
+      const mine = k > 0 && o.list_texts[k] != null && o.list_texts[k].trim() ? o.list_texts[k] : pickText(o.list_texts);
+      texts.forEach((it, n) => { const t = texts.length > 1 && o.list_texts[n] != null ? o.list_texts[n] : mine; if (t != null && (it.placeholder || it.empty)) { it.text = t; it.placeholder = it.empty = false; } });
     }
     const abs = o.section === "BKGD2000";   // the background is the one widget with a display position
     for (const it of its) {
@@ -519,7 +523,7 @@ async function detailScreen(d, id) {
       return h("span", { class: "vp-thumb" + (see ? "" : " none") + (see && im.frames > 1 ? " anim" : ""), title: listImageLabel(im, k), onclick: () => choose(k) },
         see ? h("img", { src: im.gif ? `${im.gif}?v=${rev(im.file)}` : `${im.url}&v=${rev(im.file)}`, loading: "lazy", alt: "" }) : h("small", {}, "–"));
     }));
-    const sync = () => { const c = pickOf(sc.id, n, list); sel.value = c; [...thumbs.children].forEach((t, k) => t.classList.toggle("on", k === c)); };
+    const sync = () => { const c = pickOf(sc.id, n, list, o.list); sel.value = c; [...thumbs.children].forEach((t, k) => t.classList.toggle("on", k === c)); };
     syncs.push(sync); sync();
     return h("div", { class: "vp-pick" }, h("div", {}, sel, o.list ? h("small", { class: "muted mono", title: "name of this list in the firmware" }, " " + o.list.replace(/^List_GDO_/, "")) : null), thumbs);
   };
@@ -589,14 +593,19 @@ function displayStage(sc, others, onPick) {
     stage.classList.toggle("plain", !marks.checked);
     const rev = bg ? state.rev[bg.file] || 0 : 0;
     if (showBg.checked && bg) stage.append(h("img", { class: "stage-bg", src: bg.url + "&v=" + rev, alt: "", style: `width:${bg.width}px;height:${bg.height}px` }));
-    for (const L of layers) {
+    const shown = layers.filter((L) => L.s === sc || !(alone.checked || !L.show)).map((L) => ({ L }));
+    // the navigation's screen lies under the main area, but its bottom strip (compass, satellites, altitude:
+    // the last 72 lines, which a window leaves free too) stays in sight: paint that part again on top
+    const nav = shown.find((e) => e.L.s.zone === 2);
+    const top = shown.reduce((k, e, n) => (e.L.s.zone !== 2 && ["main", "window"].includes(e.L.s.role) ? n : k), -1);
+    if (nav && top >= 0) shown.splice(top + 1, 0, { L: nav.L, strip: true });
+    for (const { L, strip } of shown) {
       const own = L.s === sc;
-      if (!own && (alone.checked || !L.show)) continue;
       const [x, y, w, hh] = L.s.rect;
-      const box = h("div", { class: "layer" + (own ? " own" : "") + (lines.checked ? " outlined" : ""), "data-screen": L.s.id,
-        style: `left:${x}px;top:${y}px;width:${w}px;height:${hh}px` });
+      const box = h("div", { class: "layer" + (own ? " own" : "") + (lines.checked && !strip ? " outlined" : ""), "data-screen": L.s.id,
+        style: `left:${x}px;top:${y}px;width:${w}px;height:${hh}px` + (strip ? `;clip-path:inset(${Math.max(0, hh - STRIP_H)}px 0 0 0)` : "") });
       paintItems(box, L.items, 0, 0, rev);
-      if (lines.checked) box.append(h("span", { class: "layer-tag" }, `${L.s.zone_name || "?"} · ${L.s.name || L.s.id}`));
+      if (lines.checked && !strip) box.append(h("span", { class: "layer-tag" }, `${L.s.zone_name || "?"} · ${L.s.name || L.s.id}`));
       stage.append(box);
     }
   };
@@ -909,6 +918,7 @@ function resolvedBlock(resolved) {
 // ---------------------------------------------------------------------------
 // stage: the widget drawn at its position on the 800x480 screen
 const SAMPLE_TEXT = "Beispiel 12:34";
+const STRIP_H = 72;   // height of the navigation's strip at the bottom of the display
 const STAGED = new Set(["BKGD", "FXPI", "VRPI", "DYPI", "ITXT", "DTXT", "FXTX", "FBTN", "CBTN", "DBTN", "DCBT", "ICBT", "MCTX", "EDTX", "MENU", "IMEN", "LIST", "EDTB", "VWTX", "FBAR", "SEBR", "CRZO", "ACLK"]);
 
 /** The drawable parts of one widget.  `extra` comes from a screen: `lines` (the texts of a menu's
@@ -919,7 +929,7 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
   const first = (v) => (Array.isArray(v) ? (v[stateNo] || v.find(Boolean)) : v) || null;
   const img = (res, x, y, label) => { if (res && res.kind === "image") items.push({ type: "img", x, y, w: res.width, h: res.height, url: res.gif || res.url, label: label || `${res.module} ${hex4(res.index)}` }); return res && res.kind === "image" ? res : null; };
   const box = (x, y, w, h, label) => items.push({ type: "box", x, y, w: w || 48, h: h || 24, label });
-  const fontH = (res) => (res && res.kind === "font" && res.height) ? Math.max(8, Math.round(res.height * (res.scale || 1000) / 1000)) : 20;
+  const fontH = (res) => (res && res.kind === "font" && res.height) ? Math.max(8, Math.floor(res.height * (res.scale || 1000) / 1000)) : 20;   // C_FontParameter::GetFontHeight truncates
   const colorOf = (res) => (res && res.kind === "color" ? "#" + res.hex.slice(0, 6) : "#ffffff");
   // `res` is a resolved text index, or the text itself (a menu line named by the screen)
   const textOf = (res) => (typeof res === "string" ? res : (res && res.kind === "text_index" && res.texts.find((t) => t != null)) || null);
@@ -975,27 +985,41 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
     }
     case "MENU": case "IMEN": {
       img(r.image, x, y, "menu image");
-      img(r.cursor_image, x, y, "cursor image");
-      // one line is as high as the cursor image, with space_evenly between lines: the factory menus
-      // then fill their zone (5 lines of 48 + 12 from y=150 end at 438 of 480)
+      // C_Menu in BCM_GPH: the lines follow each other at font height + space_evenly, the first at text_dy;
+      // the cursor image is centred on the line it marks (drawn here on the first) and that line takes
+      // the second text colour.  Checked on photos of a unit: five lines of 34 + 15 under each other.
       const cur = r.cursor_image && r.cursor_image.kind === "image" ? r.cursor_image : null;
-      const fh = fontH(r.font), col = first(r.text_colors);
-      const lineH = cur ? cur.height : Math.round(fh * 1.2), pitch = lineH + (f.space_evenly || 0);
+      const fh = fontH(r.font), col = first(r.text_colors), sel = (Array.isArray(r.text_colors) && r.text_colors[1]) || col;
+      const pitch = fh + (f.space_evenly || 0), y0 = y + (f.text_dy || 0);
+      img(r.cursor_image, x, y0 + Math.floor(fh / 2) - Math.floor((cur ? cur.height : fh) / 2), "cursor image");
       const own = r.texts || [];
       // a screen names the lines (its own text list per line, else the menu's texts); alone, show the menu's
       let lines = extra && extra.lines ? extra.lines.map((t, n) => t || own[n] || null)
         : own.length ? own : Array.from({ length: f.item_count || 1 }, () => null);
-      if (extra && extra.zoneH) lines = lines.slice(0, Math.max(1, Math.floor((extra.zoneH - y + (f.space_evenly || 0)) / pitch)));  // what fits; the rest scrolls
-      lines.forEach((t, n) => anchored(x + (f.text_dx || 0), y + n * pitch + Math.max(0, Math.round((lineH - fh) / 2)) + (f.text_dy || 0), f.text_width || (cur ? cur.width : 300), t, col, r.font, `line ${n + 1}`, f.text_alignment || 0));
+      if (extra && extra.zoneH) lines = lines.slice(0, Math.max(1, Math.floor((extra.zoneH - y0 + (f.space_evenly || 0)) / pitch)));  // what fits; the rest scrolls
+      lines.forEach((t, n) => anchored(x + (f.text_dx || 0), y0 + n * pitch, f.text_width || (cur ? cur.width : 300), t, n ? col : sel, r.font, `line ${n + 1}`, f.text_alignment || 0));
       break;
     }
-    case "LIST":
+    case "LIST": {
+      // C_List in BCM_GPH: the rows are clipped to the box at (left_margin, top_margin) of visible_width x
+      // visible_height and follow each other at font height + vertical_spacing.  The cursor sits around the
+      // row it marks; where exactly is read off photos of a unit (it starts 18 left of the text).
       img(r.background, x, y, "background");
-      box(x + (f.left_margin || 0), y + (f.top_margin || 0), f.visible_width, f.visible_height, "visible area");
+      const fh = fontH(r.font), pitch = fh + (f.vertical_spacing || 0);
+      const lx = x + (f.left_margin || 0), ly = y + (f.top_margin || 0);
       img(r.scrollbar_bg, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar background");
       img(r.scrollbar, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar");
-      img(r.cursor, x + (f.left_margin || 0), y + (f.top_margin || 0), "cursor");
+      const cur = r.cursor && r.cursor.kind === "image" ? r.cursor : null;
+      if (cur) items.push({ type: "img", x: lx - 18, y: ly + Math.floor(fh / 2) - Math.floor(cur.height / 2), w: Math.min(cur.width, (f.visible_width || cur.width) + 36), h: cur.height,
+        url: cur.gif || cur.url, label: "cursor (place estimated)" });
+      box(lx, ly, f.visible_width, f.visible_height, "visible area");
+      const rows = Math.max(1, Math.min(12, Math.ceil((f.visible_height || pitch) / pitch)));
+      const pos = f.column_position || [0], size = f.column_size || [f.visible_width || 200];
+      for (let n = 0; n < rows; n++) pos.forEach((px, c) => {
+        if ((size[c] || 0) >= 20) text(lx + px, ly + n * pitch, size[c], null, n ? r.not_selected_color : r.selected_color, r.font, `row ${n + 1}${pos.length > 1 ? `, column ${c + 1}` : ""}`, 0);
+      });
       break;
+    }
     case "EDTB": {
       const imgs = (r.images || []).filter(Boolean), col = r.not_selected_color;
       (f.key_dx || []).forEach((dx, n) => {
@@ -1030,7 +1054,7 @@ function paintItems(stage, items, ox, oy, rev) {
         style: `${st};justify-content:${just};align-items:${["center", "flex-start", "flex-end"][it.valign != null ? it.valign : 1] || "flex-start"};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px`, ...attrs });
       if (!txt.trim()) { /* nothing to draw: the outline shows where it is */ }
       else if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
-        src: `/api/render.png?font=${it.font}&text=${encodeURIComponent(txt)}&color=${it.hex}&interline=${it.interline}` }));
+        src: `/api/render.png?font=${it.font}&text=${encodeURIComponent(txt)}&color=${it.hex}&interline=${it.interline}&align=${it.align || 0}` }));
       else box.append(txt);
       stage.append(box);
     }

@@ -91,8 +91,11 @@ def render_line(text: str, blocks: dict[int, dict], spacing: int = 0, missing: s
 
 
 def render_text(text: str, blocks: dict[int, dict], scale: int = 1000, color=(255, 255, 255, 255),
-                interline: int = 0, spacing: int = 0) -> Image.Image:
-    """Multi-line (``\r`` separated) text as an RGBA image in ``color`` at ``scale``/1000."""
+                interline: int = 0, spacing: int = 0, align: int = 0) -> Image.Image:
+    """Multi-line (``\r`` separated) text as an RGBA image in ``color`` at ``scale``/1000.
+
+    ``align`` places the shorter lines: 0 at the left, 1 centred, 2 at the right (the unit aligns
+    every line of a text on its own, a centred popup message has all its lines centred)."""
     lines = [render_line(ln, blocks, spacing) for ln in text.replace("\n", "\r").split("\r")] or [render_line("", blocks)]
     factor = max(1, scale) / 1000
     scaled = []
@@ -108,6 +111,6 @@ def render_text(text: str, blocks: dict[int, dict], scale: int = 1000, color=(25
         layer = Image.new("RGBA", im.size, rgb + (0,))
         alpha = im if len(color) < 4 or color[3] == 255 else im.point(lambda v: v * color[3] // 255)
         layer.putalpha(alpha)
-        out.paste(layer, (0, y))
+        out.paste(layer, ((width - im.width) // 2 if align == 1 else width - im.width if align == 2 else 0, y))
         y += im.height + interline
     return out

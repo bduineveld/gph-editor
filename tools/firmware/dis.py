@@ -1,4 +1,4 @@
-"""Small PowerPC disassembler for ELF32 relocatables (enough opcodes to follow control flow), relocations resolved.
+"""Small PowerPC disassembler for ELF32 relocatables (enough opcodes to follow control flow and float maths), relocations resolved.
 usage: dis.py FILE FUNCTION [start end]"""
 import struct, sys
 path, fname = sys.argv[1], sys.argv[2]
@@ -35,6 +35,10 @@ def target(s, add):
     return f"{sec['sname']}+{s[1]+add:#x}"
 LOAD = {32: "lwz", 33: "lwzu", 34: "lbz", 35: "lbzu", 36: "stw", 37: "stwu", 38: "stb", 39: "stbu", 40: "lhz", 42: "lha", 44: "sth", 46: "lmw", 47: "stmw"}
 X31 = {266: "add", 40: "subf", 444: "or", 28: "and", 316: "xor", 235: "mullw", 24: "slw", 536: "srw", 824: "srawi", 23: "lwzx", 87: "lbzx", 279: "lhzx", 151: "stwx", 215: "stbx", 104: "neg", 124: "nor", 8: "subfc", 10: "addc", 138: "adde", 136: "subfe", 202: "addze", 200: "subfze", 234: "addme", 26: "cntlzw", 954: "extsb", 922: "extsh", 491: "divw", 459: "divwu", 60: "andc"}
+FLOAD = {48: "lfs", 49: "lfsu", 50: "lfd", 51: "lfdu", 52: "stfs", 53: "stfsu", 54: "stfd", 55: "stfdu"}
+FARITH = {18: "fdiv", 20: "fsub", 21: "fadd", 25: "fmul"}
+F63 = {0: "fcmpu cr{cr}, f{A}, f{B}", 32: "fcmpo cr{cr}, f{A}, f{B}", 12: "frsp f{D}, f{B}", 14: "fctiw f{D}, f{B}", 15: "fctiwz f{D}, f{B}",
+       40: "fneg f{D}, f{B}", 72: "fmr  f{D}, f{B}", 264: "fabs f{D}, f{B}"}
 CC = {(12, 0): "blt", (4, 0): "bge", (12, 1): "bgt", (4, 1): "ble", (12, 2): "beq", (4, 2): "bne"}
 fn = next(s for s in syms if s[0] == fname and s[3] == ti)
 a0, a1 = fn[1], fn[1] + fn[2]
@@ -59,6 +63,14 @@ for pc in range(a0, a1, 4):
     elif op == 25: t = f"oris r{rA}, r{rD}, {imm:#x}"
     elif op == 28: t = f"andi. r{rA}, r{rD}, {imm:#x}"
     elif op == 26: t = f"xori r{rA}, r{rD}, {imm:#x}"
+    elif op == 27: t = f"xoris r{rA}, r{rD}, {imm:#x}"
+    elif op in FLOAD: t = f"{FLOAD[op]} f{rD}, {simm}(r{rA})"
+    elif op in (59, 63):
+        x = (w >> 1) & 1023; rC = (w >> 6) & 31; sfx = "s" if op == 59 else ""
+        if op == 63 and x in F63: t = F63[x].format(D=rD, A=rA, B=rB, cr=rD >> 2)
+        elif (x & 31) in FARITH: t = f"{FARITH[x & 31]}{sfx} f{rD}, f{rA}, f{rC if (x & 31) == 25 else rB}"
+        elif (x & 31) in (28, 29, 30, 31): t = f"{ {28: 'fmsub', 29: 'fmadd', 30: 'fnmsub', 31: 'fnmadd'}[x & 31]}{sfx} f{rD}, f{rA}, f{rC}, f{rB}"
+        else: t = f"op{op}/{x} f{rD}, f{rA}, f{rB}"
     elif op == 12: t = f"addic r{rD}, r{rA}, {simm}"
     elif op == 13: t = f"addic. r{rD}, r{rA}, {simm}"
     elif op == 8: t = f"subfic r{rD}, r{rA}, {simm}"
@@ -66,7 +78,7 @@ for pc in range(a0, a1, 4):
     elif op == 21: t = f"rlwinm{'.' if w & 1 else ''} r{rA}, r{rD}, sh={rB}, mb={(w >> 6) & 31}, me={(w >> 1) & 31}"
     elif op == 19:
         x = (w >> 1) & 1023
-        t = {16: "blr" if rD == 20 else f"b{CC.get((rD & 28, rA & 3), '?')[1:]}lr", 528: "bctr" + ("l" if w & 1 else "")}.get(x, f"op19/{x}")
+        t = {16: ("blr" if rD == 20 else f"b{CC.get((rD & 28, rA & 3), '?')[1:]}lr") + ("l" if w & 1 else ""), 528: "bctr" + ("l" if w & 1 else "")}.get(x, f"op19/{x}")
     elif op == 31:
         x = (w >> 1) & 1023
         if x == 0: t = f"cmpw cr{rD >> 2}, r{rA}, r{rB}"

@@ -53,15 +53,19 @@ from dataclasses import dataclass, field
 #: every type the referenced indexes all exist in exactly this section and the highest index
 #: matches the section size (BKGD 38 slots -> max 37 ...).  "probable" ones fit but are not unique.
 TYPE_SECTIONS: dict[int, str] = {
-    1: "FBAR2000", 2: "FBTN2006", 3: "CBTN2006", 4: "DBTN2001", 5: "DCBT2000", 8: "EDTX2000",
+    1: "FBAR2000", 2: "FBTN2006", 3: "CBTN2006", 4: "DBTN2001", 5: "DCBT2000", 7: "FXTX2006", 8: "EDTX2000",
     9: "EDTB2006", 10: "BKGD2000", 11: "FXPI2000", 12: "FXTX2006", 15: "IMEN2000", 16: "ITXT2000",
     18: "LIST2001", 19: "MCTX2006", 21: "CRZO2002", 23: "SEBR2000", 24: "VRPI2000", 25: "VWTX2000",
-    28: "MENU2006", 34: "DTXT2000", 37: "DTXT2000", 38: "ICBT2000",
+    28: "MENU2006", 31: "LIST2001", 33: "LIST2001", 34: "DTXT2000", 37: "DTXT2000", 38: "ICBT2000", 43: "DBTN2001",
 }
+#: 7, 31, 33 and 43 follow from the slots nothing else refers to: types 18, 31 and 33 together use the 52 lists
+#: exactly once over, type 43 uses exactly the six dynamic buttons type 4 leaves and type 7 the one fixed text
+#: type 12 leaves.  31 is the list of a main menu (stations, destinations), sharing its object id with its frame.
 PROBABLE_TYPES = {8, 9, 37, 38}
 #: types without a GPH item behind them.  20 is a radio group (``C_COL_RB``, object ids 100xxx): it has no
-#: picture of its own, the check buttons that follow it in the list are its members.
-TYPE_NAMES = {7: "text?", 20: "radio group", 26: "object", 27: "object", 29: "object", 31: "object", 33: "object", 43: "text?"}
+#: picture of its own, the check buttons that follow it in the list are its members.  26, 27 and 29 are the
+#: windows the software draws itself (map, video, route).
+TYPE_NAMES = {20: "radio group", 26: "window", 27: "window", 29: "window"}
 #: sections whose list values are text indexes (TXIN2000); VRPI lists hold IMAG2000 indexes
 TEXT_LIST_SECTIONS = {"ITXT2000", "MENU2006", "IMEN2000", "LIST2001", "MCTX2006", "ICBT2000", "EDTB2006", "CBTN2006", "FBTN2006", "DBTN2001", "DCBT2000"}
 
@@ -482,8 +486,8 @@ class ScreenDatabase:
 
         Which zones the unit really combines is decided at runtime (display manager); this
         picks what always goes together: the top band (background, temperature, clock and the
-        source line that belongs to the main screen) and, under a menu or popup, the main
-        screen of the same function.  Full-screen zones get nothing.
+        source line that belongs to the main screen), the navigation's strip at the bottom and,
+        under a menu or popup, the main screen of the same function.  Full-screen zones get nothing.
         """
         sc = self.screens[sid]
         role = sc.zone.role if sc.zone else None
@@ -501,6 +505,12 @@ class ScreenDatabase:
             if mid is not None:
                 main = self.screens[mid]
                 out.append(mid)
+        # the navigation's own screen lies under everything: its strip with compass, satellites and altitude
+        # shows through the bottom of the main area (seen on photos of a unit, also under the radio)
+        if role != "band" and sc.zone_id != 0x02 and not any(self.screens[i].zone_id == 0x02 for i in out):
+            strip = self._first(0x02, 2)
+            if strip is not None:
+                out.insert(0, strip)
         for zid in (0x0A, 0x07, 0x06, 0x05):
             if zid == sc.zone_id:
                 continue

@@ -339,8 +339,14 @@ the section size):
 | 9 | `EDTB2006` (probable) | | 25 | `VWTX2000` |
 | 10 | `BKGD2000` | | 28 | `MENU2006` (sub 19 = the menu; sub 25 = one of its lines, no GPH item) |
 | 11 | `FXPI2000` | | 34 | `DTXT2000` (37 probably too) |
-| 12 | `FXTX2006` | | 38 | `ICBT2000` (probable) |
-| 15 | `IMEN2000` | | 7, 20, 26, 27, 29, 31, 33, 43 | no GPH item (map window, video, OSD …) |
+| 12 | `FXTX2006` (7 too) | | 38 | `ICBT2000` (probable) |
+| 15 | `IMEN2000` | | 31, 33 | `LIST2001` |
+| 43 | `DBTN2001` | | 20, 26, 27, 29 | no GPH item (20 a radio group; the others windows the software draws: map, video …) |
+
+Types 7, 31, 33 and 43 follow from the slots nothing else refers to: types 18, 31 and 33 together
+use the 52 lists exactly once over, type 43 uses exactly the six dynamic buttons type 4 leaves, and
+type 7 the one fixed text type 12 leaves.  Type 31 is the list at the left of a main menu (stations,
+destinations); it shares its object id with the frame around it.
 
 The first entries of a screen carry the screen id itself as object id: background, fixed
 texts and fixed pictures.  The others carry the **object ids the MMI code uses**
@@ -390,6 +396,14 @@ band).  Which zones are combined at a given moment is decided in code (`MGR_DIS`
 the paint order used by the editor is the order of the zone ids with the band background
 under its pieces.
 
+Photos of a unit show two things the data does not say.  The navigation's screen in the map zone
+(`NAV_F1_Z6_3`: compass, visible satellites or localisation, altitude) stays in sight in the last 72
+lines of the display, also under the radio or a settings screen, although the main area's
+background is 408 high and opaque: the editor paints that strip again on top of the main area.
+And a main menu (`NAV_M1_Z1_0`, `TUNER_M1_0_Z1_0`) takes the whole display with a list at the left
+and the menu at the right; the lighter frame with the arrow (`vp_cadre_main_list`,
+`vp_cadre_main_menu`) marks which of the two has the focus.
+
 ### 8.2 Menus
 
 A menu is one object (type 28 `MENU2006` or 15 `IMEN2000`, sub 19) followed by one object
@@ -397,10 +411,26 @@ per **line** (type 28, sub 25, index 0).  A line is not a GPH item: it only carr
 object id the MMI code uses and, when its text can change, a list of `TXIN2000` indexes
 (`List_GDO_Rneg2010_imenu_NAV_M1_Z1_0_l5` = "stop guidance" / "resume guidance").  Lines
 without a list take `MENU2006.texts[n]`.  The number of lines equals the menu's
-`item_count`.  A line is as high as the cursor image and `space_evenly` is the gap between
-lines: with that the factory menus fill their zone exactly (five lines of 48 + 12 from
-y=150 end at 438 of 480; the list symbols call such a menu `menu_5l`), and longer menus
-scroll.
+`item_count`.
+
+Where the lines go is in `C_Menu` of BCM_GPH (`Create`, `ModifyStates`): line n starts at
+`y + text_dy + n × (font height + space_evenly)`, its text anchored at `x + text_dx` (alignment
+0 left, 1 centred, 2 right).  The font height is `char_height × font_scale / 1000`, cut off to a
+whole number (`C_FontParameter::GetFontHeight`: 46 × 730 → 33).  The cursor image is centred on
+the line it marks (top = line top + font height / 2 − cursor height / 2) and slides there; the
+marked line takes the second text colour.  A line whose state is 3 is invisible and takes no room:
+the lines after it move up.  Photos of a unit agree: the five lines of the map menu (font 33,
+`space_evenly` 15) lie 48 apart, not 63 as a cursor height of 48 plus 15 would give.  With this
+the factory's contextual menus all turn out centred on the same height (y 21 with six lines of
+41, y 97 with two of 48 …).
+
+A list (`LIST2001`, `C_List`) clips its rows to the box of `visible_width` × `visible_height` at
+(`left_margin`, `top_margin`) and puts them `font height + vertical_spacing` apart; columns start
+at `column_position`.  On the photos the cursor starts 18 left of the text and is about
+`visible_width` + 36 wide; that part is read off the photos, not the code.
+
+Every line of a text with line breaks is aligned on its own: a centred popup message has all its
+lines centred.
 
 A variable picture (`VRPI2000`) has no image of its own: its list holds the `IMAG2000`
 indexes it can show, one at a time.  It is a choice, not an animation: the screen module sets
@@ -494,7 +524,8 @@ audio settings key or on `NAV`.  `BCM/spy` then ("collect of spy asked by user")
 save their status, writes every spy to `/SDI/SPY/<number, 5 digits>/<name>.bin.gz` (plain gzip),
 saves the user profile files and a dump of the system database, beeps, and signals the system
 module; the log text says the unit restarts after that.  How long `LONG2` is, is decided by the
-panel and not found in this firmware.
+panel and not found in this firmware.  Tried on a unit (November 2026): holding `NAV` for several
+seconds puts "The system will restart in 3 s" on the display and the unit restarts.
 
 ### 9.3 Spy 21403: the picture on the display
 
@@ -533,5 +564,5 @@ command 60 (key 7, `LONG2`); which key of the panel that is has not been worked 
   `unit_dependance`.
 * Screens: which zones the unit combines when (code in `MGR_DIS`/`BCM_MENU`), the second flags
   byte, what `Z2` is used for, and which text colour a selected or disabled menu line gets.
-* Unit screenshots (§9): which panel key is key 7 (opens the code screen), how long `LONG2` is, and
-  whether a collect really ends with a restart.
+* Unit screenshots (§9): which panel key is key 7 (opens the code screen) and how long `LONG2` is
+  exactly.

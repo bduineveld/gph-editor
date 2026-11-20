@@ -25,7 +25,7 @@ API (all JSON unless noted)::
     GET  /api/files/ID/image/INDEX.gif           animation
     GET  /api/files/ID/font/INDEX.png            BFNT glyph sheet
     GET  /api/settings                           theme/language in use, screen size, background
-    GET  /api/render.png?font=N&text=..&color=.. text drawn with the unit's bitmap font (scaled)
+    GET  /api/render.png?font=N&text=..&color=..&align=0|1|2  text drawn with the unit's bitmap font (scaled)
     POST /api/settings    {"theme": "HA01", "language": "DE"}
     GET  /api/screens                            screens of the unit (needs GraphicBase.RNEG, see gph.screens)
     GET  /api/screens/ID                         one screen with its widgets, decoded and resolved
@@ -329,7 +329,7 @@ class Editor:
                 blocks[b["high_byte"]] = bf.fields
         return blocks
 
-    def render_png(self, font_index: int, text: str, color: str, interline: int = 0) -> bytes:
+    def render_png(self, font_index: int, text: str, color: str, interline: int = 0, align: int = 0) -> bytes:
         ws = self.workspace()
         it = ws.item(ws.font, "FONT2007", font_index)
         if it is None:
@@ -338,7 +338,7 @@ class Editor:
             rgba = tuple(bytes.fromhex(color.lstrip("#").ljust(8, "f")[:8]))
         except ValueError:
             raise ApiError(f"bad colour {color!r}")
-        img = fonts.render_text(text, self.font_blocks(ws, font_index), it.fields.get("font_scale", 1000), rgba, interline)
+        img = fonts.render_text(text, self.font_blocks(ws, font_index), it.fields.get("font_scale", 1000), rgba, interline, align=align)
         return _png(img)
 
     @staticmethod
@@ -921,7 +921,7 @@ class Handler(BaseHTTPRequestHandler):
     def r_render(self, q):
         with self.editor.lock:
             png = self.editor.render_png(_idx(q.get("font", "0")), q.get("text", ""), q.get("color", "ffffffff"),
-                                         int(q.get("interline", 0)))
+                                         int(q.get("interline", 0)), int(q.get("align", 0) or 0))
             self._send(200, png, "image/png")
 
     def r_open(self, q):

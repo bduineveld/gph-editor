@@ -10,6 +10,7 @@ import zlib
 
 import pytest
 
+from gph import screens as screens_mod
 from gph.screens import ZONES, Elf, ScreenDatabase, ScreenError, find_graphic_base, unpack_module
 
 HERE = os.path.dirname(__file__)
@@ -82,7 +83,7 @@ def ref(typ, sub, index):
 def sample_elf() -> bytes:
     entry = lambda oid, r: struct.pack(">III", oid, r, 0)
     screen7 = entry(7, ref(10, 0, 0)) + entry(7, ref(12, 0, 5)) + entry(20003, ref(16, 2, 3)) + entry(180004, ref(28, 19, 1)) + bytes(12)
-    screen8 = entry(8, ref(10, 0, 1)) + entry(99, ref(43, 13, 2)) + bytes(12)
+    screen8 = entry(8, ref(10, 0, 1)) + entry(99, ref(27, 28, 0)) + bytes(12)
     index = struct.pack(">III", 7, 0x15010000, 0) + struct.pack(">III", 8, 0x15010000, 0)
     return build_elf([
         ("pIndexOfScreenDataBase", index, [(8, "pDataBase000007"), (20, "pDataBase000008")]),
@@ -151,7 +152,8 @@ def test_parse_screens():
     assert s7.objects[3].sub == 19 and s7.objects[3].obj_id == 180004
     s8 = db.screens[8]
     assert s8.name is None
-    assert s8.objects[1].section is None and s8.objects[1].to_json()["kind"] == "text?"
+    assert s8.objects[1].section is None and s8.objects[1].to_json()["kind"] == "window"
+    assert {t: screens_mod.TYPE_SECTIONS[t] for t in (7, 31, 33, 43)} == {7: "FXTX2006", 31: "LIST2001", 33: "LIST2001", 43: "DBTN2001"}
     assert db.uses("FXTX2006", 5) == [7] and db.uses("BKGD2000", 1) == [8] and db.uses("BKGD2000", 9) == []
     assert db.summary()["count"] == 2 and db.summary()["named"] == 1
     j = s7.to_json()
@@ -335,7 +337,8 @@ def test_real_database():
     assert {sc.zone_id for sc in db.screens.values()} - set(ZONES) == {0}            # one empty screen has no zone
     # names here come from the list symbols only; the zone and the band pieces do not depend on them
     assert db.screens[47].zone.name == "Z0_3" and 48 in db.family(47)
-    assert db.companions(47)[:2] == [1715, 123] and db.companions(47)[-1] == 117
+    assert db.companions(47)[:3] == [965, 1715, 123] and db.companions(47)[-1] == 117   # 965: the navigation's strip
+    assert 965 not in db.companions(965) and 965 not in db.companions(123)   # not under itself, not around a band piece
     assert db.summary()["named"] > 200
     # every typed reference points inside its section's slot range (sizes of the factory GEN_common)
     slots = {"BKGD2000": 38, "FXPI2000": 161, "FXTX2006": 728, "DTXT2000": 350, "ITXT2000": 180, "FBTN2006": 224, "CBTN2006": 157,
