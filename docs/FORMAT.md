@@ -496,6 +496,37 @@ there.  This is the convention of the buttons (`alignment`, §3.2).  `FXTX2006` 
 alignment fields: its `style` byte is `vertical << 4 | horizontal` (0x10 centred, 0x11
 starts at x, 0x12 ends at x).
 
+### 8.5 Where a press leads
+
+What happens when a line or button is selected is code, not data, but the screen classes of
+the MMI modules are generated from one pattern, so it can be read by a program
+([`src/gph/transitions.py`](../src/gph/transitions.py)):
+
+* `C_Menu_<NAME>::Verify(unsigned long object, TYPE_CUM_SCRN_EVT event)` returns the number
+  of the action that handles an event on an object of the screen, 0 when there is none.  The
+  object ids are those of the database (§8.2: `240528` is line 1 of screen 35).  Event 337
+  is "selected"; 178, 186, 194 … (steps of 8) reach the same actions and seem to go by the
+  position of a line among the visible ones (not used here).
+* `C_Menu_<NAME>::InvokeAction(unsigned int number)` jumps through a table in `.rodata` to
+  `Action_EVT_<WIDGET>_<NAME>_<Item>_SI` (`Action_EVT_MENU_ITEM_NAV_M1_Z1_0_Map_Management_SI`).
+* An action that opens a screen calls `C_MENU_STATE::ChangeState(unsigned long screen, bool,
+  bool)` with the screen id in `r4`; `ChangeState(short, bool, bool)` with -1 returns to the
+  previous screen (-2 occurs too).  An action with neither does its work on the spot.
+
+`Verify` and `InvokeAction` are compare-and-branch code, so a small PowerPC interpreter runs
+them for every object of the screen; calls out of them (is this line visible?) are answered
+with 1.  The actions are not run: their `ChangeState` calls are listed with the constant
+loaded before each, which gives every screen an action *can* open.  In 2.80 this finds 642
+handled presses on 239 screens: 248 open one screen, 73 choose between screens (or a screen
+and going back) by the state of the unit, 198 only go back, 122 stay on the screen and one
+computes its target.
+Checked against the names: line "Map Management" of the navigation menu (35) opens
+`MAP_M1_Z1_0` (36), "Change band" of the radio menu (1473) opens `TUNER_BAND_CHG_Z1_0`.
+
+Not found this way: screens another module opens after a message (the radio's "Audio
+settings"), the keys of the unit itself, and the classes of 77 screens that are not in this
+database (phone with a SIM card, Maserati, USB jukebox).
+
 ## 9. Screenshots and hidden codes of the unit
 
 Read from the 2.80 firmware; nothing in this section has been tried on a unit yet.

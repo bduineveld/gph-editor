@@ -12,6 +12,9 @@ const state = {
   layers: {},           // screen id -> ids of the screens shown around it on the display
   picks: {},            // screen id -> {object position: which picture of a variable picture is shown}
   hidden: {},           // screen id -> Set of object positions taken off the display
+  // operating a screen like on the unit: the screens walked through, and per screen the object the cursor is on
+  sim: { trail: [], focus: {}, next: null, keys: false, note: null, choice: null },
+  entryFilter: false,   // screens list: only the screens a menu tree starts at
 };
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -67,14 +70,14 @@ const isPublic = () => !!(state.settings && state.settings.public);
 async function refreshFiles() {
   const r = await api("GET", "/api/files");
   state.files = r.files;
-  renderSidebar();
+  renderChrome();
 }
 
 function updateFile(info) {
   const i = state.files.findIndex((f) => f.id === info.id);
   if (i >= 0) state.files[i] = info; else { state.files.push(info); loadSettings(); }
   state.rev[info.id] = (state.rev[info.id] || 0) + 1;
-  renderSidebar();
+  renderChrome();
 }
 
 function imgUrl(fid, kind, index, extra = "") {
@@ -97,65 +100,238 @@ function parseRoute() {
   return { f: q.f != null ? +q.f : null, s: q.s || null, i: q.i != null ? +q.i : null };
 }
 
-async function onRoute() {
+async function onRoute(force) {
   const r = parseRoute();
-  const sectionChanged = r.f !== state.route.f || r.s !== state.route.s;
+  const sectionChanged = force === true || r.f !== state.route.f || r.s !== state.route.s;
   state.route = r;
+  $("#layout").className = "v-" + (currentCat() || "home") + (r.i != null && r.s ? " has-detail" : "");
   if (sectionChanged) {
-    state.filter = "";
+    state.filter = state.nextFilter || "";
+    state.nextFilter = "";
     await loadSection();
   }
-  renderSidebar();
+  renderChrome();
   highlightActive();
   if (r.i != null && r.s) showDetail(); else hideDetail();
 }
 
 // ---------------------------------------------------------------------------
-// sidebar
-const GROUP_ORDER = [["texts", "Texts"], ["colors", "Colours"], ["images", "Images"], ["textures", "Textures"], ["fonts", "Fonts"], ["other", "Widgets & layout"]];
+// navigation: by kind of content, not by the file it happens to be stored in
+const CATS = [
+  ["screens", "Screens", "Every screen of the unit, drawn as on the display, with the widgets it is built from."],
+  ["images", "Images", "The pictures of the theme, and the textures they are cut from."],
+  ["colors", "Colours", "The text colours of the theme."],
+  ["texts", "Texts", "The texts of the language, and the indexes widgets find them with."],
+  ["fonts", "Fonts", "The bitmap fonts, and the table of sizes and styles built on them."],
+  ["widgets", "Widgets", "Buttons, texts, pictures, lists and menus: where they sit and what they link to."],
+];
+const WIDGET_GROUPS = [["Pictures", ["BKGD", "FXPI", "VRPI", "DYPI"]], ["Texts", ["FXTX", "ITXT", "DTXT", "EDTX", "VWTX", "MCTX"]],
+  ["Buttons", ["FBTN", "CBTN", "DBTN", "DCBT", "ICBT"]], ["Menus and lists", ["MENU", "IMEN", "LIST", "EDTB"]], ["Other", []]];
 
-function renderSidebar() {
-  const nav = $("#sidebar");
-  nav.innerHTML = "";
-  const scr = state.settings && state.settings.screens;
-  if (scr) {
-    const active = state.route.s === "screens";
-    nav.append(h("div", { class: "file" },
-      h("div", { class: "file-head", title: scr.path || "" }, h("span", { class: "name" }, "Unit"), h("small", { class: "mono" }, "GraphicBase")),
-      h("div", { class: "sec" + (active ? " active" : ""), onclick: () => go(null, "screens") },
-        h("span", {}, "Screens ", h("small", { class: "mono" }, `${scr.named} named`)), h("span", { class: "n" }, String(scr.count)))));
-  }
-  if (!state.files.length) {
-    nav.append(h("div", { class: "empty" }, "No files open"));
-    return;
-  }
+function catOfSection(s) {
+  if (s.group === "textures") return "images";
+  if (s.group !== "other") return s.group;
+  return s.kind === "FONT" ? "fonts" : s.kind === "TXIN" ? "texts" : "widgets";
+}
+
+/** A file of another theme or language than the one chosen at the top is left out of the lists. */
+function inScope(f) {
+  const st = state.settings;
+  if (!st) return true;
+  if (st.themes.includes(f.variant)) return f.variant === st.theme;
+  if (st.languages.includes(f.variant)) return f.variant === st.language;
+  return true;
+}
+
+/** Where the items of a category live: every used section of that kind in the files in scope. */
+function sources(cat) {
+  const out = [];
   for (const f of state.files) {
-    const box = h("div", { class: "file" + (f.dirty ? " dirty" : "") });
-    box.append(h("div", { class: "file-head", title: f.path || "uploaded" },
-      h("span", { class: "dot", title: "unsaved changes" }),
-      h("span", { class: "name" }, f.label),
-      h("small", { class: "mono" }, f.name.trim())));
-    const pub = isPublic();
-    box.append(h("div", { class: "file-tools" },
-      pub ? h("button", { class: "small primary", onclick: () => downloadDialog(f.id) }, "Download")
-          : h("button", { class: "small primary", onclick: () => saveDialog(f.id) }, "Save…"),
-      h("button", { class: "small", disabled: !f.undo, onclick: () => fileAction(f.id, "undo") }, "Undo"),
-      pub ? null : h("button", { class: "small", disabled: !f.dirty || !f.path, onclick: () => confirmRevert(f.id) }, "Revert"),
-      h("button", { class: "small", onclick: () => closeFile(f.id) }, "Close")));
-    for (const [g, title] of GROUP_ORDER) {
-      const secs = f.sections.filter((s) => s.group === g && (g !== "other" || s.used));
-      if (!secs.length) continue;
-      if (g === "other") box.append(h("div", { class: "group-title" }, title));
-      for (const s of secs) {
-        const active = state.route.f === f.id && state.route.s === s.name;
-        const label = g === "other" ? `${s.description || s.kind}` : title;
-        box.append(h("div", { class: "sec" + (active ? " active" : "") + (s.used ? "" : " zero"), onclick: () => go(f.id, s.name) },
-          h("span", {}, label, " ", h("small", { class: "mono" }, s.name)),
-          h("span", { class: "n" }, String(s.used))));
+    if (!inScope(f)) continue;
+    for (const s of f.sections) if (s.used && catOfSection(s) === cat) out.push({ f, s });
+  }
+  const late = (x) => (x.s.group === "textures" || x.s.kind === "TXIN" || x.s.kind === "FONT" ? 1 : 0);   // the main kind first
+  return out.sort((a, b) => late(a) - late(b));
+}
+
+function sourceLabel(src, all) {
+  const base = { images: "Images", textures: "Textures", texts: "Language texts", fonts: "Glyphs", colors: "Colours" }[src.s.group]
+    || (src.s.kind === "FONT" ? "Font table" : src.s.description || src.s.kind);
+  return all.filter((o) => o.s.name === src.s.name).length > 1 ? `${src.f.module} ${base.toLowerCase()}` : base;
+}
+
+function currentCat() {
+  const { f, s } = state.route;
+  if (s === "screens") return "screens";
+  const file = fileById(f), sec = file && file.sections.find((x) => x.name === s);
+  return sec ? catOfSection(sec) : null;
+}
+
+function goCat(cat) {
+  if (cat === "screens") return go(null, "screens");
+  const src = sources(cat)[0];
+  if (src) go(src.f.id, src.s.name);
+}
+
+const hasCat = (cat) => (cat === "screens" ? !!(state.settings && state.settings.screens) : sources(cat).length > 0);
+
+/** Everything around the views: the tabs, the rail with the kinds of widgets, the files button. */
+function renderChrome() {
+  const cat = currentCat();
+  const tabs = $("#tabs");
+  tabs.innerHTML = "";
+  for (const [id, title, text] of CATS) {
+    tabs.append(h("button", { class: "tab" + (cat === id ? " on" : ""), disabled: !hasCat(id), title: text, onclick: () => goCat(id) }, title));
+  }
+  const dirty = state.files.filter((f) => f.dirty).length;
+  const fb = $("#btn-files");
+  fb.innerHTML = "";
+  fb.classList.toggle("dirty", dirty > 0);
+  if (dirty) fb.append(h("span", { class: "dot" }));
+  fb.append(dirty ? `${dirty} changed` : "Files", h("span", { class: "n" }, String(state.files.length)));
+  const rail = $("#rail");
+  rail.innerHTML = "";
+  rail.hidden = cat !== "widgets";
+  if (cat === "widgets") {
+    const srcs = sources("widgets");
+    const grouped = WIDGET_GROUPS.flatMap((g) => g[1]);
+    for (const [title, kinds] of WIDGET_GROUPS) {
+      const mine = srcs.filter((x) => (kinds.length ? kinds.includes(x.s.kind) : !grouped.includes(x.s.kind)));
+      if (!mine.length) continue;
+      rail.append(h("div", { class: "rail-title" }, title));
+      for (const x of mine) {
+        const on = state.route.f === x.f.id && state.route.s === x.s.name;
+        rail.append(h("div", { class: "rail-item" + (on ? " on" : ""), title: `${x.s.name} · ${x.f.label}`, onclick: () => go(x.f.id, x.s.name) },
+          h("span", {}, x.s.description || x.s.kind), h("span", { class: "n" }, String(x.s.used))));
       }
     }
-    nav.append(box);
   }
+  renderDrawer();
+}
+
+// ---------------------------------------------------------------------------
+// the files that are open (a panel on the right): what is in them, download, undo, close
+function toggleDrawer(on) {
+  const d = $("#drawer");
+  d.hidden = on == null ? !d.hidden : !on;
+  renderDrawer();
+}
+
+function fileContents(f) {
+  const used = f.sections.filter((s) => s.used);
+  const widgets = used.filter((s) => catOfSection(s) === "widgets");
+  const parts = used.filter((s) => catOfSection(s) !== "widgets").map((s) => { const name = (s.description || s.kind).replace(/ \(.*\)$/, "").toLowerCase(); return `${s.used} ${name}${s.used === 1 || name.endsWith("s") ? "" : "s"}`; });
+  const nw = widgets.reduce((n, s) => n + s.used, 0);
+  if (widgets.length) parts.push(widgets.length === 1 ? `${nw} ${(widgets[0].description || widgets[0].kind).toLowerCase()}${nw === 1 ? "" : "s"}` : `${nw} widgets of ${widgets.length} kinds`);
+  return parts.join(" · ") || "empty";
+}
+
+function renderDrawer() {
+  const d = $("#drawer");
+  if (d.hidden) return;
+  d.innerHTML = "";
+  const pub = isPublic(), st = state.settings || { themes: [], languages: [] };
+  d.append(h("div", { class: "d-head" }, h("h1", {}, "Files"),
+    h("span", {}, h("button", { class: "primary", onclick: () => openDialog() }, pub ? "Upload…" : "Open…"), " ",
+      h("button", { class: "icon", title: "Close", onclick: () => toggleDrawer(false) }, "✕"))),
+    h("p", { class: "muted small" }, pub ? "Your files stay in your own session (two hours of inactivity) and are never written on the server. Download a changed file to keep it."
+      : `Working folder ${state.cwd || ""}. Save writes a new file; the original is never overwritten.`));
+  if (st.screens) {
+    d.append(h("div", { class: "fgroup" }, "Unit software"),
+      h("div", { class: "frow" }, h("div", { class: "fname", title: pub ? "" : st.screens.path }, h("b", {}, "GraphicBase"), h("small", { class: "muted" }, `${st.screens.count} screens, ${st.screens.named} with a name`)),
+        h("div", { class: "factions" }, h("button", { class: "small", onclick: () => { toggleDrawer(false); go(null, "screens"); } }, "Show screens"))));
+  }
+  const groupOf = (f) => (st.themes.includes(f.variant) ? `Theme ${f.variant}` : st.languages.includes(f.variant) ? `Language ${f.variant}` : f.variant === "COMM" ? "Common" : "Other");
+  const groups = [...new Set(state.files.map(groupOf))].sort((a, b) => (a === "Common" ? -1 : b === "Common" ? 1 : 0));
+  for (const g of groups) {
+    const files = state.files.filter((f) => groupOf(f) === g);
+    const use = g === "Common" ? "used with every theme and language" : inScope(files[0]) && g !== "Other" ? "shown now" : "";
+    d.append(h("div", { class: "fgroup" }, g, use ? h("small", { class: "muted" }, " · " + use) : null));
+    for (const f of files) {
+      d.append(h("div", { class: "frow" + (f.dirty ? " dirty" : "") },
+        h("div", { class: "fname", title: f.path || "uploaded" }, h("b", {}, h("span", { class: "dot", title: "unsaved changes" }), f.label), h("small", { class: "muted" }, fileContents(f))),
+        h("div", { class: "factions" },
+          pub ? h("button", { class: "small" + (f.dirty ? " primary" : ""), onclick: () => downloadDialog(f.id) }, "Download")
+              : h("button", { class: "small" + (f.dirty ? " primary" : ""), onclick: () => saveDialog(f.id) }, "Save…"),
+          h("button", { class: "small", disabled: !f.undo, title: "take back the last change to this file", onclick: () => fileAction(f.id, "undo") }, "Undo"),
+          pub ? null : h("button", { class: "small", disabled: !f.dirty || !f.path, onclick: () => confirmRevert(f.id) }, "Revert"),
+          h("button", { class: "small", onclick: () => closeFile(f.id) }, "Close"))));
+    }
+  }
+  if (!state.files.length) d.append(h("p", { class: "empty" }, "No files open."));
+}
+
+// ---------------------------------------------------------------------------
+// overview: what is loaded and where to do what
+function renderHome() {
+  const main = $("#main");
+  main.innerHTML = "";
+  const st = state.settings || {}, scr = st.screens, pub = isPublic();
+  const openBtn = h("button", { class: "primary", onclick: () => openDialog() }, pub ? "Upload files…" : "Open files…");
+  if (!state.files.length && !scr) {
+    main.append(h("div", { class: "home" }, h("h1", {}, "GPH editor"),
+      h("p", { class: "lead" }, "Look inside the graphics of an RT6 / RNEG navigation unit and change them: screens, pictures, colours, texts and the place of every widget."),
+      h("p", { class: "muted" }, "Start with the files of a design: ", h("code", {}, "Common/GEN_common.gph.bz2"), ", ", h("code", {}, "Common/FNT_common.gph.bz2"), ", a language such as ",
+        h("code", {}, "DU/GEN_DU.gph.bz2"), " and a theme folder like ", h("code", {}, "HARM00"), ". You can drop them anywhere on this page."),
+      h("p", {}, openBtn)));
+    return;
+  }
+  const count = (id) => (id === "screens" ? scr.count : sources(id).filter((x) => x.s.group !== "textures" && x.s.kind !== "TXIN" && x.s.kind !== "FONT").reduce((n, x) => n + x.s.used, 0));
+  const cards = CATS.map(([id, title, text]) => h("button", { class: "cat-card", disabled: !hasCat(id), onclick: () => goCat(id) },
+    h("span", { class: "cat-n" }, hasCat(id) ? count(id).toLocaleString("en") : "–"), h("b", {}, title),
+    h("span", { class: "muted" }, hasCat(id) ? text : id === "screens" ? "Needs GraphicBase.RNEG.gz from the unit's software update." : "Not in the files that are open.")));
+  const task = (title, how, fn) => h("button", { class: "task", onclick: fn }, h("span", {}, h("b", {}, title), h("span", { class: "muted" }, how)), h("span", { class: "arrow" }, "→"));
+  const first = (...ids) => () => goCat(ids.find(hasCat) || ids[0]);
+  const loaded = [st.theme ? `theme ${st.theme}` : null, st.language ? `language ${st.language}` : null, `${state.files.length} file${state.files.length === 1 ? "" : "s"} open`].filter(Boolean).join(" · ");
+  main.append(h("div", { class: "home" },
+    h("div", { class: "home-head" }, h("div", {}, h("h1", {}, "Overview"), h("p", { class: "muted" }, loaded.charAt(0).toUpperCase() + loaded.slice(1))), openBtn),
+    h("div", { class: "cat-grid" }, cards),
+    h("div", { class: "task-cols" },
+      h("section", {}, h("h3", {}, "Explore a design"),
+        task("See a screen as the unit shows it", "Pick a screen: it is drawn in its zone, with the screens the unit shows around it.", first("screens")),
+        scr && scr.links ? task("Click through the menus", "Operate a screen like on the unit: move the cursor, press, and see which screen opens.", () => { state.entryFilter = true; state.zoneFilter = ""; goCat("screens"); }) : null,
+        task("Find out what a screen is made of", "Hover a widget in the list beside the display to find it, click it to open it.", first("screens", "widgets")),
+        task("See where something is used", "A picture lists the widgets that use it, a widget the screens it is on.", first("images", "widgets")),
+        task("Search by name, number or text", "The search box at the top finds screens and texts; every list has a filter of its own.", () => $("#search").focus())),
+      h("section", {}, h("h3", {}, "Make your own"),
+        task("Replace a picture", "Open a picture and choose your own file. Several files or an animated GIF become an animation.", first("images")),
+        task("Change a colour or a text", "Open it, change it and press Apply.", first("colors", "texts")),
+        task("Move a widget", "Open a widget from a screen and drag it on the display, or type its x and y.", first("screens", "widgets")),
+        task("Undo, and take the result to the unit", "Files (top right) shows what you changed: undo there, and download the changed packages.", () => toggleDrawer(true))))));
+}
+
+// ---------------------------------------------------------------------------
+// search over everything that has a name: screens and texts
+let searchSeq = 0;
+async function runSearch(raw) {
+  const box = $("#search-results"), q = raw.trim().toLowerCase();
+  if (q.length < 2) { box.hidden = true; return; }
+  const seq = ++searchSeq;
+  try {
+    if (state.settings && state.settings.screens && !state.screens) state.screens = (await api("GET", "/api/screens")).screens;
+    const src = sources("texts").find((x) => x.s.group === "texts");
+    const key = src ? `${src.f.id}:${state.rev[src.f.id] || 0}` : "";
+    if (src && (!state.searchTexts || state.searchTexts.key !== key)) {
+      state.searchTexts = { key, f: src.f.id, s: src.s.name, rows: (await api("GET", `/api/files/${src.f.id}/items?section=${src.s.name}`)).items };
+    }
+    if (seq !== searchSeq) return;
+    const scr = (state.screens || []).filter((r) => String(r.id) === q || (r.name || "").toLowerCase().includes(q) || (r.class || "").toLowerCase().includes(q) || (r.module || "").toLowerCase() === q);
+    const txt = src ? state.searchTexts.rows.filter((r) => r.text.toLowerCase().includes(q)) : [];
+    const kinds = CATS.filter(([id]) => id !== "screens").flatMap(([id]) => sources(id)).filter((x) => `${x.s.description} ${x.s.name}`.toLowerCase().includes(q));
+    const pick = (fn) => () => { box.hidden = true; $("#search").value = ""; fn(); };
+    const more = (n, fn) => (n > 6 ? h("div", { class: "sr more", onmousedown: pick(() => { state.nextFilter = raw.trim(); fn(); }) }, `all ${n} in a list →`) : null);
+    box.innerHTML = "";
+    if (scr.length) box.append(h("div", { class: "sr-title" }, `Screens (${scr.length})`),
+      ...scr.slice(0, 6).map((r) => h("div", { class: "sr", onmousedown: pick(() => go(null, "screens", r.id)) }, h("b", {}, r.name || `screen ${r.id}`), h("small", { class: "muted mono" }, ` ${r.id} · ${r.zone_name || "?"}`))),
+      more(scr.length, () => { if (state.route.s === "screens") { state.filter = state.nextFilter; state.nextFilter = ""; renderScreens(); } else go(null, "screens"); }));
+    if (txt.length) box.append(h("div", { class: "sr-title" }, `Texts (${txt.length})`),
+      ...txt.slice(0, 6).map((r) => h("div", { class: "sr", onmousedown: pick(() => go(state.searchTexts.f, state.searchTexts.s, r.index)) }, h("small", { class: "muted mono" }, hex4(r.index) + " "), r.text.replace(/\r/g, " ").slice(0, 70))),
+      more(txt.length, () => { if (state.route.f === state.searchTexts.f && state.route.s === state.searchTexts.s) { state.filter = state.nextFilter; state.nextFilter = ""; renderSection(); } else go(state.searchTexts.f, state.searchTexts.s); }));
+    if (kinds.length) box.append(h("div", { class: "sr-title" }, "Kinds"),
+      ...kinds.slice(0, 6).map((x) => h("div", { class: "sr", onmousedown: pick(() => go(x.f.id, x.s.name)) }, h("b", {}, x.s.description || x.s.kind), h("small", { class: "muted mono" }, ` ${x.s.name} · ${x.f.label} · ${x.s.used}`))));
+    if (!scr.length && !txt.length && !kinds.length) box.append(h("div", { class: "sr-title" }, "Nothing found"));
+    box.hidden = false;
+  } catch (e) { box.hidden = true; }
 }
 
 async function fileAction(fid, action, body) {
@@ -180,27 +356,23 @@ async function closeFile(fid) {
   if (f.dirty && !confirm(`${f.label} has unsaved changes. Close anyway?`)) return;
   await act(() => api("POST", `/api/files/${fid}/close`, {}));
   state.files = state.files.filter((x) => x.id !== fid);
-  if (state.route.f === fid) go(null);
-  renderSidebar();
-  loadSettings();
+  await loadSettings();
+  if (state.route.f === fid) go(null); else { renderChrome(); if (!state.route.s) renderHome(); }
 }
 
 // ---------------------------------------------------------------------------
 // section views
 async function loadSection() {
   const { f, s } = state.route;
-  const main = $("#main");
   if (s === "screens") {
     if (!state.screens) state.screens = (await act(() => api("GET", "/api/screens"))).screens;
     state.rows = state.screens;
     renderScreens();
     return;
   }
-  if (f == null || !s || !fileById(f)) {
+  if (f == null || !s || !fileById(f) || !fileById(f).sections.some((x) => x.name === s)) {
     state.rows = [];
-    main.innerHTML = "";
-    main.append(h("div", { class: "empty" }, state.files.length ? "Pick a section on the left."
-      : isPublic() ? "Upload GPH files to start (drop them on this page, or use Upload…)." : "Open a GPH file or folder to start."));
+    renderHome();
     return;
   }
   const r = await act(() => api("GET", `/api/files/${f}/items?section=${encodeURIComponent(s)}`));
@@ -208,11 +380,16 @@ async function loadSection() {
   renderSection();
 }
 
+/** Title, the places this kind of thing is stored in (when there are several), filter and count. */
 function viewHead(title, sub, extra) {
-  const input = h("input", { type: "text", placeholder: "filter…", value: state.filter,
+  const input = h("input", { type: "search", placeholder: "Filter…", value: state.filter,
     oninput: (e) => { state.filter = e.target.value; renderSection(true); } });
-  return h("div", { class: "view-head" }, h("h2", {}, title), h("span", { class: "muted" }, sub), input,
-    h("span", { class: "count" }), extra);
+  const cat = currentCat();
+  const srcs = cat && cat !== "screens" && cat !== "widgets" ? sources(cat) : [];
+  const seg = srcs.length > 1 ? h("div", { class: "seg" }, ...srcs.map((x) => h("button", { class: state.route.f === x.f.id && state.route.s === x.s.name ? "on" : "",
+    title: `${x.s.name} in ${x.f.label}`, onclick: () => go(x.f.id, x.s.name) }, sourceLabel(x, srcs), h("span", { class: "n" }, String(x.s.used))))) : null;
+  return h("div", { class: "view-head" }, h("div", { class: "view-title" }, h("h1", {}, title), h("span", { class: "muted small" }, sub)), seg,
+    h("div", { class: "view-tools" }, input, h("span", { class: "count muted small" }), extra));
 }
 
 function matches(row, text) {
@@ -237,7 +414,8 @@ function renderSection(keepFocus) {
   else if (sec.group === "textures") body = renderTextures();
   else if (sec.group === "fonts") body = renderFonts();
   else body = renderOther();
-  const head = viewHead(`${sec.description || sec.kind}`, `${s} · ${file.label}`);
+  const cat = catOfSection(sec);
+  const head = viewHead(cat === "widgets" ? sec.description || sec.kind : CATS.find((c) => c[0] === cat)[1], `${cat === "widgets" ? "" : (sec.description || sec.kind) + " · "}${s} · ${file.label}`);
   main.append(head, body.el);
   $(".count", head).textContent = `${body.shown} of ${state.rows.length}`;
   if (focused) { const inp = $(".view-head input"); inp.focus(); inp.setSelectionRange(caret, caret); }
@@ -367,29 +545,36 @@ function renderScreens(keepFocus) {
   main.innerHTML = "";
   const q = state.filter.toLowerCase();
   const zf = state.zoneFilter || "";
-  const rows = state.rows.filter((r) => (!zf || r.role === zf || zf.split(",").includes(String(r.zone)))
+  const starts = state.rows.filter((r) => r.presses && !r.openers);
+  const rows = state.rows.filter((r) => (!zf || r.role === zf || zf.split(",").includes(String(r.zone))) && (!state.entryFilter || (r.presses && !r.openers))
     && (!q || String(r.id) === q || (r.name || "").toLowerCase().includes(q) || (r.module || "").toLowerCase().includes(q) || (r.class || "").toLowerCase().includes(q) || (r.zone_name || "").toLowerCase() === q));
   const tb = h("tbody");
   for (const r of rows) {
     tb.append(h("tr", { "data-i": r.id, onclick: () => go(null, "screens", r.id) },
       h("td", { class: "idx" }, String(r.id)),
       h("td", {}, r.name ? h("b", {}, r.name) : h("span", { class: "muted" }, "(no name found)"), r.class && r.class !== "C_" + r.name && r.class !== "C_Menu_" + r.name ? h("small", { class: "muted mono" }, " " + r.class) : null),
-      h("td", {}, r.zone_name ? h("span", { class: "zone-tag role-" + r.role, title: (zoneById(r.zone) || {}).title || "" }, r.zone_name) : h("span", { class: "muted" }, "?"), " ", h("small", { class: "muted" }, ROLE_TITLE[r.role] || "")),
+      h("td", {}, r.zone_name ? h("span", { class: "zone-tag role-" + r.role, title: (zoneById(r.zone) || {}).title || "" }, r.zone_name) : h("span", { class: "muted" }, "?"), h("small", { class: "muted" }, " " + (ROLE_TITLE[r.role] || ""))),
       h("td", { class: "mono" }, r.module || ""),
-      h("td", { class: "idx" }, String(r.count)),
-      h("td", { class: "mono muted", style: "font-size:12px" }, r.sections.map((x) => (x.startsWith("type") ? "?" : x.slice(0, 4))).join(" "))));
+      h("td", { class: "idx" }, String(r.count))));
   }
+  // one chip per kind of zone; a click on the plan below narrows it down to one place on the display
+  const setZone = (v) => { state.zoneFilter = v; renderScreens(); };
   const roles = [...new Set(zoneList().map((z) => z.role))];
-  const zsel = h("select", { title: "show the screens of one kind of zone", onchange: (e) => { state.zoneFilter = e.target.value; renderScreens(); } },
-    h("option", { value: "" }, "all zones"),
-    ...roles.map((ro) => h("option", { value: ro, selected: zf === ro }, `${ROLE_TITLE[ro] || ro} (${zoneList().filter((z) => z.role === ro).reduce((n, z) => n + z.count, 0)})`)),
-    h("optgroup", { label: "one zone" }, ...zoneList().map((z) => h("option", { value: String(z.id), selected: zf === String(z.id) }, `${z.name} (${z.count})`))));
+  const isRole = !zf || roles.includes(zf);
+  const chips = h("div", { class: "chips" }, h("button", { class: "chip" + (!zf ? " on" : ""), onclick: () => setZone("") }, "All"),
+    ...roles.map((ro) => h("button", { class: "chip role-" + ro + (zf === ro ? " on" : ""), onclick: () => setZone(zf === ro ? "" : ro) },
+      ROLE_TITLE[ro] || ro, h("span", { class: "n" }, String(zoneList().filter((z) => z.role === ro).reduce((n, z) => n + z.count, 0))))),
+    isRole ? null : h("button", { class: "chip on", title: "show all zones again", onclick: () => setZone("") }, zf.split(",").map((id) => (zoneById(+id) || {}).name || id).join(" · "), " ✕"),
+    starts.length ? h("button", { class: "chip starts" + (state.entryFilter ? " on" : ""), title: "screens you can click through that no other screen opens: where a menu tree starts",
+      onclick: () => { state.entryFilter = !state.entryFilter; renderScreens(); } }, "Menu starts", h("span", { class: "n" }, String(starts.length))) : null);
   const info = state.settings && state.settings.screens;
-  const head = viewHead("Screens", info ? (isPublic() ? info.path.split("/").pop() : info.path.split("/").slice(-3).join("/")) : "", zsel);
-  main.append(head, h("p", { class: "muted", style: "margin:-6px 0 10px;max-width:980px" },
-    "Every screen in the unit's software, with the GEN_common widgets it is built from. A screen fills one zone of the display, not all of it: the unit shows a main area, the pieces of the top band and, when needed, a menu or a popup on top. Open one to see it in place, together with what is shown around it."),
-    zoneMap(),
-    h("table", { class: "items" }, h("thead", {}, h("tr", {}, h("th", {}, "id"), h("th", {}, "screen"), h("th", {}, "zone"), h("th", {}, "module"), h("th", {}, "widgets"), h("th", {}, "kinds"))), tb));
+  const head = viewHead("Screens", info ? info.path.split("/").pop() : "");
+  main.append(head, chips,
+    h("details", { class: "fold zones-fold", open: state.plansOpen !== false, ontoggle: (e) => { state.plansOpen = e.target.open; } },
+      h("summary", {}, "How the display is divided"),
+      h("p", { class: "muted small" }, "A screen fills one zone of the display, not all of it. The unit shows a main area and the pieces of the top band, and puts a menu or a popup on top when needed. Click a zone to list its screens."),
+      zoneMap()),
+    h("table", { class: "items screens" }, h("thead", {}, h("tr", {}, h("th", {}, "id"), h("th", {}, "screen"), h("th", {}, "zone"), h("th", {}, "module"), h("th", {}, "widgets"))), tb));
   $(".count", head).textContent = `${rows.length} of ${state.rows.length}`;
   if (focused) { const inp = $(".view-head input"); inp.focus(); inp.setSelectionRange(caret, caret); }
   highlightActive();
@@ -412,7 +597,7 @@ function zoneMap() {
         title: `${z.name}: ${z.title} (${z.count} screens)`, style: `left:${x * k}px;top:${y * k}px;width:${w * k}px;height:${hh * k}px`,
         onclick: () => { state.zoneFilter = state.zoneFilter === ids ? "" : ids; renderScreens(); } }, h("span", {}, z.name)));
     }
-    return h("div", {}, h("div", { class: "muted", style: "font-size:12px;margin-bottom:3px" }, title), box);
+    return h("div", {}, h("div", { class: "muted small", style: "margin-bottom:3px" }, title), box);
   };
   return h("div", { class: "zone-plans" }, plan("always there: top band and main area", ["band", "main", "map"]),
     plan("on top when needed: menu, contextual menu, popup", ["menu", "context", "popup"]),
@@ -422,6 +607,9 @@ function zoneMap() {
 const OBJ_KIND = { BKGD: "background", FXPI: "fixed picture", VRPI: "variable picture", FXTX: "fixed text", ITXT: "indexed text", DTXT: "dynamic text",
   FBTN: "button", CBTN: "check button", DBTN: "dynamic button", DCBT: "dynamic check button", ICBT: "indexed check button", MENU: "menu", IMEN: "indexed menu",
   LIST: "list", MCTX: "multiple choice", EDTX: "edited text", EDTB: "keyboard", VWTX: "view text", FBAR: "bar", SEBR: "selectable bar", CRZO: "crossroad zoom" };
+
+/** widgets the cursor can be on while a screen is operated (besides the lines of a menu) */
+const PRESSABLE = new Set(["FBTN", "CBTN", "DBTN", "DCBT", "ICBT", "LIST", "MCTX", "SEBR"]);
 
 /** Which picture of a variable picture (object number `n` of screen `sid`) the display shows: the one picked,
  *  else the first with something to see (most lists start with an empty picture, the "off" state). */
@@ -455,8 +643,10 @@ function groupMembers(objects, n) {
 }
 
 /** Stage items of one screen, positioned inside its zone (the background sits at 0,0).
- *  `onPick` is called after a click on a variable picture changed which picture it shows. */
-function layerItems(sc, onPick) {
+ *  `onPick` is called after a click on a variable picture changed which picture it shows.
+ *  `sim` (the screen being operated): `focus` is the object the cursor is on, `can` the objects
+ *  that can be pressed and `press(object id)` what a click on one does. */
+function layerItems(sc, onPick, sim) {
   const items = [];
   const [zx, zy, , zh] = sc.rect;
   const picks = (state.picks[sc.id] = state.picks[sc.id] || {});
@@ -466,6 +656,8 @@ function layerItems(sc, onPick) {
     if (!o.fields || (hidden && hidden.has(n))) continue;
     const extra = { zoneH: zh };
     if (o.lines) extra.lines = o.lines.map((ln) => pickText(ln.texts));
+    if (o.lines && sim) extra.sel = o.lines.findIndex((ln) => ln.obj === sim.focus);
+    if (sim && o.section.startsWith("LIST") && o.obj !== sim.focus) extra.noCursor = true;   // one cursor on a screen
     if (o.list_images && o.list_images.length) { extra.images = o.list_images; extra.pick = pickOf(sc.id, n, o.list_images, o.list); }
     const its = stageItems(o.section, o.fields, o.resolved || {}, 0, extra);
     // indexed texts and buttons know their texts only through the screen's list: use the first
@@ -484,9 +676,18 @@ function layerItems(sc, onPick) {
       if (it.type === "text") it.vis = Math.max(0, Math.min(it.x + it.w, sc.rect[2]) - Math.max(it.x, 0));
       it.obj = o.obj; it.label = `${o.section.slice(0, 4)} ${hex4(o.index)} ${it.label}`;
       if (it.cycle) it.onclick = () => { picks[n] = (extra.pick + 1) % o.list_images.length; (onPick || showDetail)(); };
+      if (sim) {
+        // a menu line is an object of its own; any other widget is pressed as a whole and gets a frame when the cursor is on it
+        const target = it.line != null && o.lines && o.lines[it.line] ? o.lines[it.line].obj : sim.can.has(o.obj) ? o.obj : null;
+        if (target != null && !it.onclick) it.onclick = () => sim.press(target);
+        if (target != null && target === sim.focus && it.line == null) it.mine = true;
+      }
       items.push(it);
     }
   }
+  // the frame goes around the largest part of the widget the cursor is on (a button's picture, a list's rows)
+  const mine = items.filter((it) => it.mine).sort((a, b) => b.w * b.h - a.w * a.h)[0];
+  if (mine) mine.focus = true;
   return items;
 }
 
@@ -495,23 +696,131 @@ async function detailScreen(d, id) {
   try { sc = await act(() => api("GET", `/api/screens/${id}`)); }
   catch (e) { d.append(h("p", { class: "problem" }, e.message)); return; }
   const zi = sc.zone_info;
-  const close = h("button", { class: "small", style: "float:right", onclick: () => go(null, "screens") }, "✕");
-  d.append(close, h("h2", {}, sc.name || `screen ${sc.id}`),
-    h("p", { class: "muted", style: "font-size:12.5px;margin:0 0 4px" },
-      zi ? h("span", {}, h("span", { class: "zone-tag role-" + zi.role }, zi.name), ` ${zi.title} · ${sc.rect[2]}×${sc.rect[3]} at ${sc.rect[0]},${sc.rect[1]}`) : `unknown zone 0x${(sc.flags >>> 24).toString(16)}`),
-    h("p", { class: "muted mono", style: "font-size:12px;margin:0 0 8px" }, `screen ${sc.id}`, sc.module ? ` · module ${sc.module}` : "", sc.class ? ` · ${sc.class}` : "", ` · flags 0x${sc.flags.toString(16)}`));
-  if (sc.family.length) d.append(h("p", { style: "font-size:12.5px;margin:0 0 8px" }, "Same screen in another zone: ",
+  d.append(h("div", { class: "d-head" },
+    h("div", {}, h("h1", {}, sc.name || `screen ${sc.id}`),
+      h("p", { class: "muted small" },
+        zi ? h("span", {}, h("span", { class: "zone-tag role-" + zi.role }, zi.name), ` ${zi.title} · ${sc.rect[2]}×${sc.rect[3]} at ${sc.rect[0]},${sc.rect[1]}`) : `unknown zone 0x${(sc.flags >>> 24).toString(16)}`,
+        h("span", { class: "mono" }, ` · screen ${sc.id}`, sc.module ? ` · ${sc.module}` : "", sc.class ? ` · ${sc.class}` : "", ` · flags 0x${sc.flags.toString(16)}`))),
+    h("button", { class: "icon", title: "Close", onclick: () => go(null, "screens") }, "✕")));
+  if (sc.family.length) d.append(h("p", { class: "small", style: "margin:0 0 10px" }, "Same screen in another zone: ",
     ...sc.family.map((fm) => h("span", { class: "link", style: "margin-right:10px;white-space:nowrap", onclick: () => go(null, "screens", fm.id) }, `${fm.zone_name || "?"} (${fm.id})`))));
+  const T = state.sim;
+  if (sc.openers.length) d.append(h("p", { class: "small", style: "margin:0 0 10px" }, "Opened from: ",
+    ...sc.openers.slice(0, 6).map((op) => h("span", { class: "link", style: "margin-right:10px;white-space:nowrap", title: "open that screen with the cursor on this line",
+      onclick: () => { T.focus[op.id] = op.obj; go(null, "screens", op.id); } }, (op.label ? `“${op.label}” in ` : "") + (op.name || `screen ${op.id}`))),
+    sc.openers.length > 6 ? h("span", { class: "muted" }, `and ${sc.openers.length - 6} more`) : null));
   // the display: this screen in its zone, with the screens the unit shows around it
   if (!state.layers[id]) state.layers[id] = sc.companions.map((c) => c.id);
   const others = (await Promise.all(state.layers[id].map((oid) => api("GET", `/api/screens/${oid}`).catch(() => null)))).filter(Boolean);
   if (state.route.i !== id || state.route.s !== "screens") return;   // moved on while loading
-  // a new choice for a variable picture redraws the display only
+  // the path walked: a press adds this screen, going back (or opening one of the path) cuts it, anything else starts anew
+  if (T.trail[T.trail.length - 1] !== id) {
+    const was = T.trail.lastIndexOf(id);
+    if (T.next === id) T.trail.push(id); else if (was >= 0) T.trail.length = was + 1; else T.trail = [id];
+    T.note = T.choice = null;
+  }
+  T.next = null;
+  const hidden = (state.hidden[sc.id] = state.hidden[sc.id] || new Set());
+  const ownTexts = (o) => { const res = o.resolved || {}; return res.text_index && res.text_index.texts ? res.text_index.texts.filter(Boolean)
+    : (res.texts || []).map((t) => t && t.texts && t.texts.find(Boolean)).filter(Boolean); };
+  // what the cursor can be on: the lines of a menu, and the buttons and lists that are on the display
+  const live = !!(state.settings && state.settings.screens && state.settings.screens.links);   // the firmware's transitions are known
+  const selectable = () => {
+    const out = [], seen = new Set();
+    if (!live) return out;
+    for (const [n, o] of sc.objects.entries()) {
+      if (o.obj === sc.id || seen.has(o.obj)) continue;
+      const kind = o.section ? o.section.slice(0, 4) : "";
+      if (!o.line && !((o.press || PRESSABLE.has(kind)) && o.fields && !hidden.has(n))) continue;
+      seen.add(o.obj);
+      const label = (pickText(o.list_texts) || ownTexts(o)[0] || "").replace(/\r/g, " ").trim();
+      out.push({ obj: o.obj, line: !!o.line, press: o.press, label: label || (o.press && o.press.item) || (o.line ? "line without a text" : OBJ_KIND[kind] || "widget") });
+    }
+    return out;
+  };
+  // the cursor starts on the first line of the menu when there is one
+  const focusObj = () => { const list = selectable(); return (list.find((x) => x.obj === T.focus[sc.id]) || list.find((x) => x.line) || list[0] || {}).obj; };
+  // a new choice for a variable picture, or a move of the cursor, redraws the display only
   const syncs = [];
   let stageEl;
-  const repaint = () => { const el = displayStage(sc, others, repaint); stageEl.replaceWith(el); stageEl = el; syncs.forEach((fn) => fn()); };
-  stageEl = displayStage(sc, others, repaint);
-  d.append(stageEl);
+  const sim = { el: h("div", { class: "remote" }) };
+  const onStage = () => !!stageEl && stageEl.contains(document.activeElement) && document.activeElement.classList.contains("stage-wrap");
+  const stageNow = () => displayStage(sc, others, repaint, live ? { ...sim, focus: focusObj(), can: new Set(selectable().map((x) => x.obj)) } : null);
+  const repaint = () => {
+    const keys = onStage();
+    const el = stageNow(); stageEl.replaceWith(el); stageEl = el; syncs.forEach((fn) => fn());
+    if (keys) $(".stage-wrap", el).focus({ preventScroll: true });
+  };
+  const open = (sid) => { T.keys = onStage(); T.next = sid; go(null, "screens", sid); };
+  const back = () => {
+    if (T.trail.length < 2) { T.note = "This is where you started. On the unit the menu closes here and the screen under it is in front again."; T.choice = null; return repaint(); }
+    T.keys = onStage(); T.trail.pop(); go(null, "screens", T.trail[T.trail.length - 1]);
+  };
+  const move = (step) => {
+    const list = selectable(), k = list.findIndex((x) => x.obj === focusObj());
+    if (!list.length) return;
+    T.focus[sc.id] = list[(k + step + list.length) % list.length].obj; T.note = T.choice = null; repaint();
+  };
+  sim.press = (obj) => {
+    const it = selectable().find((x) => x.obj === obj);
+    if (!it) return;
+    T.focus[sc.id] = obj; T.note = T.choice = null;
+    const p = it.press, known = p ? p.to.filter((t) => !t.missing) : [];
+    if (!p) T.note = `“${it.label}”: no press on it was found in the firmware (another part of the software may handle it).`;
+    else if (known.length === 1 && p.to.length === 1 && !p.back && !p.var) return open(known[0].id);
+    else if (p.to.length || p.var) T.choice = obj;
+    else if (p.back && T.trail.length > 1) { toast(`“${it.label}” does its work and closes the menu`); return back(); }
+    else T.note = `“${it.label}” does its work ` + (p.back ? "and closes the menu: the screen under it is in front again." : "on this screen: it opens no other screen.");
+    repaint();
+  };
+  sim.key = (e) => {
+    const k = e.key;
+    if (k === "ArrowDown" || k === "ArrowRight") move(1);
+    else if (k === "ArrowUp" || k === "ArrowLeft") move(-1);
+    else if (k === "Enter" || k === " ") { if (focusObj() != null) sim.press(focusObj()); }
+    else if (k === "Escape" || k === "Backspace") back();
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  };
+  // the controls under the display: the unit's dial and ESC key, what the line under the cursor does, and the path
+  const describe = (p) => !p ? "nothing found for a press"
+    : [p.to.length ? (p.to.length > 1 || p.back ? "opens one of: " : "opens ") + p.to.map((t) => t.name || `screen ${t.id}`).join(", ") : null,
+       p.var ? "opens a screen chosen while the unit runs" : null,
+       p.back ? (p.to.length || p.var ? "or closes the menu" : "does its work and closes the menu") : null,
+       !p.to.length && !p.var && !p.back ? "does its work on this screen" : null].filter(Boolean).join(", ");
+  syncs.push(() => {
+    const list = selectable(), cur = list.find((x) => x.obj === focusObj());
+    sim.el.innerHTML = "";
+    sim.el.hidden = !list.length && T.trail.length < 2;
+    if (sim.el.hidden) return;
+    let info;
+    if (cur && T.choice === cur.obj) {
+      const p = cur.press;
+      info = h("div", { class: "remote-info" }, h("div", {}, h("b", {}, cur.label), " can lead to more than one place; the unit chooses by its state. Pick one:"),
+        h("div", { class: "row" }, ...p.to.map((t) => t.missing ? h("span", { class: "muted small" }, `screen ${t.id} (not in this database)`)
+          : h("button", { class: "small", onclick: () => open(t.id) }, t.name || `screen ${t.id}`, h("small", { class: "muted" }, ` ${t.id}`))),
+          p.back ? h("button", { class: "small", onclick: back }, "close the menu") : null,
+          p.var ? h("span", { class: "muted small" }, "or a screen the unit works out while it runs") : null));
+    } else if (T.note) info = h("div", { class: "remote-info" }, T.note);
+    else if (cur) info = h("div", { class: "remote-info" }, h("b", {}, cur.label), h("span", { class: "muted", title: cur.press && cur.press.action ? `function in the firmware: ${cur.press.action}` : "" },
+      cur.press && cur.press.item && cur.press.item !== cur.label ? ` (${cur.press.item})` : "", " · " + describe(cur.press)));
+    else info = h("div", { class: "remote-info muted" }, "Nothing to select on this screen.");
+    sim.el.append(h("div", { class: "remote-keys" },
+        h("button", { title: "ESC key: back to the previous screen (Esc)", onclick: back }, "ESC"),
+        h("button", { title: "turn the dial back (↑)", disabled: list.length < 2, onclick: () => move(-1) }, "▲"),
+        h("button", { title: "turn the dial on (↓)", disabled: list.length < 2, onclick: () => move(1) }, "▼"),
+        h("button", { class: "primary", title: "press the dial (Enter)", disabled: !cur, onclick: () => sim.press(cur.obj) }, "OK")),
+      info);
+    if (T.trail.length > 1) sim.el.append(h("div", { class: "trail" }, ...T.trail.map((tid, k) => {
+      const row = (state.screens || []).find((r) => r.id === tid), name = (row && row.name) || `screen ${tid}`;
+      return k === T.trail.length - 1 ? h("b", {}, name) : h("span", {}, h("span", { class: "link", onclick: () => go(null, "screens", tid) }, name), " › ");
+    })));
+  });
+  stageEl = stageNow();
+  if (T.keys) requestAnimationFrame(() => { const w = $(".stage-wrap", stageEl); if (w) w.focus({ preventScroll: true }); });
+  T.keys = false;
+  const widgets = h("section", { class: "widgets-col" });
+  d.append(h("div", { class: "screen-work" }, h("section", { class: "stage-col" }, stageEl), widgets));
   const rev = (fid) => state.rev[fid] || 0;
   const picker = (n, o) => {
     const list = o.list_images;
@@ -528,7 +837,6 @@ async function detailScreen(d, id) {
     return h("div", { class: "vp-pick" }, h("div", {}, sel, o.list ? h("small", { class: "muted mono", title: "name of this list in the firmware" }, " " + o.list.replace(/^List_GDO_/, "")) : null), thumbs);
   };
   // the widgets; the box in front takes one off the display above (the unit hides widgets while it runs)
-  const hidden = (state.hidden[sc.id] = state.hidden[sc.id] || new Set());
   const showBox = (n, o) => {
     const group = o.type === 20 ? groupMembers(sc.objects, n) : null;
     if (o.line || (group ? !group.length : !o.fields)) return null;
@@ -544,13 +852,19 @@ async function detailScreen(d, id) {
     return box;
   };
   const tb = h("tbody");
+  const links = sc.objects.some((o) => o.press);
   for (const [n, o] of sc.objects.entries()) {
     const sec = o.section ? o.section.slice(0, 4) : null;
     const fl = o.fields || {};
     const texts = (o.lines ? o.lines.map((ln) => (ln.texts || []).filter((t) => t != null && t.trim()).join(" / ") || null) : (o.list_texts || [])).filter((t) => t != null);
-    const res = o.resolved || {};
-    const own = res.text_index && res.text_index.texts ? res.text_index.texts.filter(Boolean)
-      : (res.texts || []).map((t) => t && t.texts && t.texts.find(Boolean)).filter(Boolean);
+    const own = ownTexts(o);
+    const p = o.press;
+    const pressed = !p ? "" : h("span", { title: p.action ? `function in the firmware: ${p.action}` : "" },
+      ...p.to.map((t) => t.missing ? h("span", { class: "muted" }, `screen ${t.id} (not in this database) `)
+        : h("span", { class: "link", style: "margin-right:8px;white-space:nowrap", onclick: () => { T.focus[sc.id] = o.obj; open(t.id); } }, "→ " + (t.name || `screen ${t.id}`))),
+      p.var ? h("span", { class: "muted" }, "→ chosen while running ") : null,
+      p.back ? h("span", { class: "muted", style: "white-space:nowrap" }, p.to.length || p.var ? "or closes" : "↩ closes the menu") : null,
+      !p.to.length && !p.var && !p.back ? h("span", { class: "muted" }, "works on this screen") : null);
     const what = o.section ? h("span", { class: "link", onclick: () => go(o.file, o.section, o.index) }, `${sec} ${hex4(o.index)}`)
       : o.line ? h("span", { class: "muted" }, "↳ line") : h("span", { class: "muted" }, `type ${o.type}`);
     const nimg = (o.list_images || []).length;
@@ -562,11 +876,17 @@ async function detailScreen(d, id) {
       h("td", { class: "idx" }, o.fixed ? "" : String(o.obj)),
       h("td", { style: "font-size:12.5px" }, texts.length ? h("span", { title: o.list || "" }, texts.slice(0, 8).map((t) => String(t).replace(/\r/g, " ").trim() || "(empty)").join(" · "), texts.length > 8 ? ` … (${texts.length})` : "")
         : nimg ? picker(n, o)
-        : own.length ? h("span", {}, own.slice(0, 8).join(o.lines ? " · " : " / ")) : o.list ? h("small", { class: "muted mono" }, o.list.replace(/^List_GDO_/, "")) : "")));
+        : own.length ? h("span", {}, own.slice(0, 8).join(o.lines ? " · " : " / ")) : o.list ? h("small", { class: "muted mono" }, o.list.replace(/^List_GDO_/, "")) : ""),
+      links ? h("td", { style: "font-size:12.5px" }, pressed) : null));
   }
-  d.append(h("h3", {}, `${sc.objects.length} widgets`),
-    h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", { title: "shown on the display above" }, "show"), h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y in zone"), h("th", {}, "object id"), h("th", {}, "texts / list"))), tb),
-    h("p", { class: "muted", style: "font-size:12px" }, "Click a widget to edit it; hover a row to find it on the display. Positions count from the top left corner of the zone. Which line, text or picture is shown, and whether a widget is visible at all, is decided by the unit while it runs: the lists are what the firmware attaches to this screen. A variable picture shows one picture of its list at a time; the software picks it by number (the first is usually an empty one, for \"off\"). Choose here which one the display above shows, or click the picture on the display. A screen can hold widgets that never appear together (the software hides a group of buttons the car has no use for): untick the box in front of a widget or a radio group to take it off the display."));
+  syncs.push(() => { const f = focusObj(); for (const tr of tb.children) tr.classList.toggle("cur", f != null && +tr.dataset.obj === f); });
+  widgets.append(h("h3", {}, `${sc.objects.length} widgets`),
+    h("table", { class: "items screen-objects" }, h("thead", {}, h("tr", {}, h("th", { title: "shown on the display" }, "show"), h("th", {}, "widget"), h("th", {}, "kind"), h("th", {}, "x,y in zone"), h("th", {}, "object id"), h("th", {}, "texts / list"), links ? h("th", { title: "where a press on it leads, read from the firmware" }, "when pressed") : null)), tb),
+    h("details", { class: "fold help" }, h("summary", {}, "How to read this"),
+      h("p", { class: "muted small" }, "Hover a row to find the widget on the display; click its name to open and edit it. Positions count from the top left corner of the zone."),
+      h("p", { class: "muted small" }, "The display can be operated like the unit: click a menu line or a button, or click the display once and use the arrow keys, Enter and Esc. The keys under it are the dial and the ESC key. A press opens the screen the firmware names for it; where that depends on the state of the unit (a route is active or not) you choose. Presses the firmware handles elsewhere, the unit's own keys (NAV, RADIO ...) and lines the unit hides are not known here."),
+      h("p", { class: "muted small" }, "Which line, text or picture is shown, and whether a widget is visible at all, is decided by the unit while it runs: the lists are what the firmware attaches to this screen. A variable picture shows one picture of its list at a time (the first is usually an empty one, for \"off\"): choose here which one the display shows, or click the picture on the display."),
+      h("p", { class: "muted small" }, "A screen can hold widgets that never appear together (the software hides a group of buttons the car has no use for): untick the box in front of a widget or a radio group to take it off the display.")));
   syncs.forEach((fn) => fn());
 }
 
@@ -574,13 +894,14 @@ function hilite(root, obj, on) {
   for (const el of root.querySelectorAll(`.stage .layer.own [data-obj="${obj}"]`)) el.classList.toggle("hl", on);
 }
 
-/** The 800x480 display with screen `sc` in its zone and the `others` around it, bottom zone first. */
-function displayStage(sc, others, onPick) {
+/** The 800x480 display with screen `sc` in its zone and the `others` around it, bottom zone first.
+ *  `sim` operates the screen: see layerItems; `sim.key` takes the keys and `sim.el` (the controls) goes under the display. */
+function displayStage(sc, others, onPick, sim) {
   const scr = (state.settings && state.settings.screen) || { width: 800, height: 480 };
   const bg = state.settings && state.settings.background;
   const order = (s) => (s.zone_info ? s.zone_info.order : 99);
-  const layers = [sc, ...others.filter((o) => o.id !== sc.id)].sort((a, b) => order(a) - order(b)).map((s) => ({ s, items: layerItems(s, onPick), show: true }));
-  const wrap = h("div", { class: "stage-wrap" });
+  const layers = [sc, ...others.filter((o) => o.id !== sc.id)].sort((a, b) => order(a) - order(b)).map((s) => ({ s, items: layerItems(s, onPick, s === sc && sim ? { ...sim } : null), show: true }));
+  const wrap = sim ? h("div", { class: "stage-wrap", tabindex: 0, onkeydown: sim.key, title: "" }) : h("div", { class: "stage-wrap" });
   const stage = h("div", { class: "stage", style: `width:${scr.width}px;height:${scr.height}px` });
   const showBg = h("input", { type: "checkbox", checked: state.stageBg !== false, title: "the theme's first background under everything" });
   const alone = h("input", { type: "checkbox", checked: !!state.stageAlone, title: "hide the other zones" });
@@ -643,12 +964,17 @@ function displayStage(sc, others, onPick) {
     ...zoneList().map((z) => h("optgroup", { label: `${z.name}: ${z.title}` },
       ...(state.screens || []).filter((r) => r.zone === z.id && r.id !== sc.id).map((r) => h("option", { value: r.id }, `${r.id} ${r.name || "(no name)"}`)))));
   const reset = h("button", { class: "small", title: "back to the zones proposed for this screen", onclick: () => { delete state.layers[sc.id]; showDetail(); } }, "Reset");
-  return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
-      h("label", {}, h("span", {}, showBg, " theme background")), h("label", {}, h("span", {}, alone, " this zone only")), h("label", {}, h("span", {}, lines, " zone outlines")), h("label", {}, h("span", {}, marks, " widget outlines")),
-      layers.some((L) => L.s.objects.some((o) => o.list_images && o.list_images.length > 1)) ? h("label", {}, h("span", {}, varOff, " variable pictures off")) : null, sample, big), wrap,
-    h("table", { class: "items layers" }, rows),
-    h("div", { class: "row" }, add, reset),
-    h("p", { class: "muted", style: "font-size:12px;margin-top:2px" }, "The zones around this screen are a proposal: the top band and, under a menu or popup, the main screen of the same function. The unit decides while it runs what it really combines."));
+  const tg = (input, text) => h("label", { class: "toggle", title: input.title }, input, h("span", {}, text));
+  return h("div", { class: "stage-block" },
+    h("div", { class: "toolbar" }, tg(showBg, "Background"), tg(alone, "This zone only"), tg(lines, "Zone outlines"), tg(marks, "Widget outlines"),
+      layers.some((L) => L.s.objects.some((o) => o.list_images && o.list_images.length > 1)) ? tg(varOff, "Variable pictures off") : null,
+      h("span", { class: "grow" }), sample, big),
+    wrap, sim ? sim.el : null,
+    h("details", { class: "fold", open: !!state.zonesOpen, ontoggle: (e) => { state.zonesOpen = e.target.open; } },
+      h("summary", {}, `Zones on the display (${layers.length})`),
+      h("table", { class: "items layers" }, rows),
+      h("div", { class: "row" }, add, reset),
+      h("p", { class: "muted small" }, "The zones around this screen are a proposal: the top band and, under a menu or popup, the main screen of the same function. The unit decides while it runs what it really combines.")));
 }
 
 // ---------------------------------------------------------------------------
@@ -664,8 +990,9 @@ async function showDetail() {
   const sec = file.sections.find((x) => x.name === s);
   d.hidden = false;
   d.innerHTML = "";
-  const close = h("button", { class: "small", style: "float:right", onclick: () => go(f, s) }, "✕");
-  d.append(close, h("h2", {}, `${s} [${hex4(i)}]`));
+  d.append(h("div", { class: "d-head" },
+    h("div", {}, h("h1", {}, `${(sec.description || sec.kind).replace(/ \(.*\)$/, "")} ${hex4(i)}`), h("p", { class: "muted mono small" }, `${s} [${hex4(i)}] · ${file.label}`)),
+    h("button", { class: "icon", title: "Close", onclick: () => go(f, s) }, "✕")));
   try {
     if (sec.group === "texts") return detailText(d, f, i);
     if (sec.group === "colors") return detailColor(d, f, i);
@@ -991,13 +1318,19 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
       const cur = r.cursor_image && r.cursor_image.kind === "image" ? r.cursor_image : null;
       const fh = fontH(r.font), col = first(r.text_colors), sel = (Array.isArray(r.text_colors) && r.text_colors[1]) || col;
       const pitch = fh + (f.space_evenly || 0), y0 = y + (f.text_dy || 0);
-      img(r.cursor_image, x, y0 + Math.floor(fh / 2) - Math.floor((cur ? cur.height : fh) / 2), "cursor image");
       const own = r.texts || [];
       // a screen names the lines (its own text list per line, else the menu's texts); alone, show the menu's
-      let lines = extra && extra.lines ? extra.lines.map((t, n) => t || own[n] || null)
+      const lines = extra && extra.lines ? extra.lines.map((t, n) => t || own[n] || null)
         : own.length ? own : Array.from({ length: f.item_count || 1 }, () => null);
-      if (extra && extra.zoneH) lines = lines.slice(0, Math.max(1, Math.floor((extra.zoneH - y0 + (f.space_evenly || 0)) / pitch)));  // what fits; the rest scrolls
-      lines.forEach((t, n) => anchored(x + (f.text_dx || 0), y0 + n * pitch, f.text_width || (cur ? cur.width : 300), t, n ? col : sel, r.font, `line ${n + 1}`, f.text_alignment || 0));
+      const fit = extra && extra.zoneH ? Math.max(1, Math.floor((extra.zoneH - y0 + (f.space_evenly || 0)) / pitch)) : lines.length;  // what fits; the rest scrolls
+      // the line the cursor is on (the first unless a screen is being operated); the lines scroll to keep it in sight
+      // it is on no line (-1) while the cursor is on another widget of the screen
+      const at = !extra || extra.sel == null ? 0 : Math.min(extra.sel, lines.length - 1), top = Math.max(0, at - fit + 1);
+      if (at >= 0) img(r.cursor_image, x, y0 + (at - top) * pitch + Math.floor(fh / 2) - Math.floor((cur ? cur.height : fh) / 2), "cursor image");
+      lines.slice(top, top + fit).forEach((t, k) => {
+        anchored(x + (f.text_dx || 0), y0 + k * pitch, f.text_width || (cur ? cur.width : 300), t, top + k === at ? sel : col, r.font, `line ${top + k + 1}`, f.text_alignment || 0);
+        items[items.length - 1].line = top + k;
+      });
       break;
     }
     case "LIST": {
@@ -1009,14 +1342,14 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
       const lx = x + (f.left_margin || 0), ly = y + (f.top_margin || 0);
       img(r.scrollbar_bg, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar background");
       img(r.scrollbar, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar");
-      const cur = r.cursor && r.cursor.kind === "image" ? r.cursor : null;
+      const cur = !(extra && extra.noCursor) && r.cursor && r.cursor.kind === "image" ? r.cursor : null;
       if (cur) items.push({ type: "img", x: lx - 18, y: ly + Math.floor(fh / 2) - Math.floor(cur.height / 2), w: Math.min(cur.width, (f.visible_width || cur.width) + 36), h: cur.height,
         url: cur.gif || cur.url, label: "cursor (place estimated)" });
       box(lx, ly, f.visible_width, f.visible_height, "visible area");
       const rows = Math.max(1, Math.min(12, Math.ceil((f.visible_height || pitch) / pitch)));
       const pos = f.column_position || [0], size = f.column_size || [f.visible_width || 200];
       for (let n = 0; n < rows; n++) pos.forEach((px, c) => {
-        if ((size[c] || 0) >= 20) text(lx + px, ly + n * pitch, size[c], null, n ? r.not_selected_color : r.selected_color, r.font, `row ${n + 1}${pos.length > 1 ? `, column ${c + 1}` : ""}`, 0);
+        if ((size[c] || 0) >= 20) text(lx + px, ly + n * pitch, size[c], null, n || (extra && extra.noCursor) ? r.not_selected_color : r.selected_color, r.font, `row ${n + 1}${pos.length > 1 ? `, column ${c + 1}` : ""}`, 0);
       });
       break;
     }
@@ -1045,12 +1378,12 @@ function paintItems(stage, items, ox, oy, rev) {
     const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px` + (it.onclick ? ";cursor:pointer" : "");
     const attrs = it.obj != null ? { "data-obj": it.obj } : {};
     if (it.onclick) attrs.onclick = it.onclick;
-    if (it.type === "img") stage.append(h("img", { class: "stage-img", src: it.url + (it.url.includes("?") ? "&" : "?") + "v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));
+    if (it.type === "img") stage.append(h("img", { class: "stage-img" + (it.focus ? " focus" : ""), src: it.url + (it.url.includes("?") ? "&" : "?") + "v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));
     else if (it.type === "text") {
       // a sample for what the unit fills in; short fields (hours, a temperature) get a short one
       const txt = it.placeholder ? (state.sampleText || ((it.vis != null ? it.vis : it.w) < 120 ? "12" : (it.vis != null ? it.vis : it.w) < 200 ? "12:34" : SAMPLE_TEXT)) : it.text;
       const just = ["flex-start", "center", "flex-end"][it.align] || "flex-start";
-      const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : it.empty ? " (empty text)" : ""}`,
+      const box = h("div", { class: "stage-text" + (it.placeholder ? " ph" : "") + (it.focus ? " focus" : ""), title: `${it.label} @ ${it.x},${it.y} width ${it.w}${it.placeholder ? " (sample text: the real one is chosen by the unit)" : it.empty ? " (empty text)" : ""}`,
         style: `${st};justify-content:${just};align-items:${["center", "flex-start", "flex-end"][it.valign != null ? it.valign : 1] || "flex-start"};color:${it.color};font-size:${Math.round(it.h * 0.78)}px;line-height:${it.h}px`, ...attrs });
       if (!txt.trim()) { /* nothing to draw: the outline shows where it is */ }
       else if (it.font != null) box.append(h("img", { class: "stage-font", alt: txt,
@@ -1058,7 +1391,7 @@ function paintItems(stage, items, ox, oy, rev) {
       else box.append(txt);
       stage.append(box);
     }
-    else stage.append(h("div", { class: "stage-box", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }, h("span", {}, it.label)));
+    else stage.append(h("div", { class: "stage-box" + (it.focus ? " focus" : ""), title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }, h("span", {}, it.label)));
   }
 }
 
@@ -1126,8 +1459,8 @@ function stageBlock(fid, section, index, fields, resolved, screens) {
   const sample = items.some((it) => it.type === "text" && it.placeholder)
     ? h("input", { type: "text", value: state.sampleText || SAMPLE_TEXT, title: "sample text for a text the unit fills in at runtime", style: "width:150px",
         oninput: (e) => { state.sampleText = e.target.value; draw(); } }) : null;
-  return h("div", {}, h("div", { class: "row", style: "justify-content:space-between" },
-    h("label", {}, h("span", {}, showBg, " screen background")), sample, stateSel, big), wrap,
+  return h("div", { class: "stage-block" }, h("div", { class: "toolbar" },
+    h("label", { class: "toggle" }, showBg, h("span", {}, "Background")), h("span", { class: "grow" }), sample, stateSel, big), wrap,
     h("div", { class: "row" }, h("label", {}, "position"), posX, "×", posY,
       movable ? h("button", { class: "small", onclick: applyPos }, "Apply") : null,
       h("small", { class: "muted" }, movable ? "drag the widget on the screen, or type x/y" : "this item has no x/y")),
@@ -1194,9 +1527,9 @@ async function openDialog(startPath) {
     const r = await act(() => api("POST", "/api/open", { path: p }));
     for (const f of r.opened) updateFile(f);
     closeModal();
-    if (r.screens) { state.screens = null; await loadSettings(); renderSidebar(); toast(`Screen database loaded: ${r.screens.count} screens`); }
-    if (r.opened.length) { toast(`Opened ${r.opened.length} file${r.opened.length > 1 ? "s" : ""}`); const f = r.opened[0]; go(f.id, f.sections.find((s) => s.used)?.name); }
-    else if (r.already_open.length) { const f = r.already_open[0]; go(f.id, f.sections.find((s) => s.used)?.name); toast("Already open", "warn"); }
+    if (r.screens) { state.screens = null; await loadSettings(); renderChrome(); toast(`Screen database loaded: ${r.screens.count} screens`); }
+    if (r.opened.length) { toast(`Opened ${r.opened.length} file${r.opened.length > 1 ? "s" : ""}`); await loadSettings(); home(); }
+    else if (r.already_open.length) toast("Already open", "warn");
     else if (r.screens) go(null, "screens");
     else toast("No GPH files found there", "warn");
   };
@@ -1229,9 +1562,8 @@ async function uploadFiles(files) {
       const r = await act(() => api("POST", "/api/upload", { name: file.name, data_b64: data }));
       for (const f of r.opened) updateFile(f);
       closeModal();
-      if (r.screens) { state.screens = null; await loadSettings(); renderSidebar(); toast(`Screen database loaded: ${r.screens.count} screens`); if (!r.opened.length) go(null, "screens"); }
-      const f = r.opened[0];
-      if (f) go(f.id, f.sections.find((s) => s.used)?.name);
+      if (r.screens) { state.screens = null; await loadSettings(); renderChrome(); toast(`Screen database loaded: ${r.screens.count} screens`); if (!r.opened.length) go(null, "screens"); }
+      if (r.opened.length) { await loadSettings(); home(); }
     } catch (e) { /* toast shown */ }
   }
 }
@@ -1273,22 +1605,45 @@ function renderSettings() {
   const st = state.settings;
   if (!st || (!st.themes.length && !st.languages.length)) return;
   const mk = (label, key, options, current) => {
-    const sel = h("select", { title: `${label} used to resolve links` }, ...options.map((o) => h("option", { value: o, selected: o === current }, o)));
+    const sel = h("select", { title: `${label}: the one shown in the lists and used to resolve links` }, ...options.map((o) => h("option", { value: o, selected: o === current }, o)));
     sel.onchange = async () => {
+      const before = fileById(state.route.f);
       state.settings = await act(() => api("POST", "/api/settings", { [key]: sel.value }));
       renderSettings();
+      // looking at an item of the old theme or language: show the same one of the new
+      const twin = before && !inScope(before) ? state.files.find((x) => inScope(x) && x.module === before.module && x.sections.some((s) => s.name === state.route.s && s.used)) : null;
+      if (twin) return go(twin.id, state.route.s, state.route.i);
+      if (before && !inScope(before)) return go(null);
+      renderChrome();
+      if (!state.route.s) renderHome(); else if (state.route.s !== "screens") renderSection();
       if (state.route.i != null) showDetail();
     };
-    return h("label", { class: "setting" }, label + " ", sel);
+    return h("label", { class: "setting" }, h("span", {}, label), sel);
   };
   if (st.themes.length) box.append(mk("Theme", "theme", st.themes, st.theme));
   if (st.languages.length) box.append(mk("Language", "language", st.languages, st.language));
 }
 
+/** Back to the overview, drawn again (the files or the settings changed). */
+function home() {
+  if (location.hash.length > 1) go(null); else onRoute(true);
+}
+
 async function boot() {
-  $("#btn-open").onclick = () => openDialog();
+  $("#btn-files").onclick = () => toggleDrawer();
+  $(".brand").onclick = (e) => { e.preventDefault(); home(); };
+  const search = $("#search");
+  let timer = 0;
+  search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => runSearch(search.value), 150); });
+  search.addEventListener("focus", () => runSearch(search.value));
+  search.addEventListener("blur", () => setTimeout(() => { $("#search-results").hidden = true; }, 150));
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { if (!$("#modal").hidden) closeModal(); else if (!$("#drawer").hidden) toggleDrawer(false); else search.blur(); }
+    if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); search.focus(); }
+  });
+  // a click beside the files panel closes it
+  document.addEventListener("mousedown", (e) => { if (!$("#drawer").hidden && !e.target.closest("#drawer, #btn-files, #modal, #toasts")) toggleDrawer(false); });
   // drag & drop upload
   let drag = 0;
   document.addEventListener("dragenter", (e) => { e.preventDefault(); drag++; document.body.classList.add("drop"); });
@@ -1296,21 +1651,13 @@ async function boot() {
   document.addEventListener("dragover", (e) => e.preventDefault());
   document.addEventListener("drop", (e) => { e.preventDefault(); drag = 0; document.body.classList.remove("drop"); if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); });
   window.addEventListener("beforeunload", (e) => { if (state.files.some((f) => f.dirty)) { e.preventDefault(); e.returnValue = ""; } });
-  window.addEventListener("hashchange", onRoute);
+  window.addEventListener("hashchange", () => onRoute());
   const r = await api("GET", "/api/files");
   state.files = r.files;
+  state.cwd = r.cwd || "";
   for (const f of state.files) state.rev[f.id] = 1;
-  $("#status").textContent = r.cwd ? `working folder ${r.cwd}` : "";
   await loadSettings();
-  if (isPublic()) {
-    $("#btn-open").textContent = "Upload…";
-    $("#status").textContent = "online version: your files stay in your own session (two hours of inactivity), nothing is written on the server";
-  }
-  renderSidebar();
-  if (!location.hash && state.files.length) {
-    const f = state.files[0];
-    go(f.id, (f.sections.find((s) => s.used) || {}).name);
-  } else onRoute();
+  await onRoute(true);
 }
 
 boot().catch((e) => toast(e.message, "err", 10000));

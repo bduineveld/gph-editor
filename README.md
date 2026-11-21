@@ -38,6 +38,10 @@ mira308sw's GPH_EDITOR (2009–2015) made public, but shares no code with either
   compose a complete picture (`docs/FORMAT.md` §8).  For every variable picture you choose
   which picture of its list the display shows; animations play.  Widgets the unit would hide
   (a group of buttons the car has no use for) can be taken off the display one by one.
+* **Click through the menus**: where a press on a menu line, button or list leads is read from
+  the code of the firmware's MMI modules (`gph.transitions`: a small PowerPC interpreter runs
+  the event dispatch of every screen class).  A screen in the editor can be operated like the
+  unit: move the cursor, press, and the screen the firmware names opens; ESC goes back.
 * **Unit screenshots**: the unit can dump the picture on its display itself (a very long press
   on the audio settings key or `NAV` collects its "spies"; spy 21403 is the display as a TGA).
   `gph spy-screenshot` turns those dumps into PNG, to compare the real screens with the editor
@@ -74,9 +78,15 @@ contains several.
 gph serve Graphics/            # opens http://127.0.0.1:8765/ with every GPH file below Graphics/
 ```
 
-The page lists the open files on the left (open more with *Open…* or by dropping files on
-the page).  Texts, colours, images, textures, fonts and the widget sections each have their
-own view; the panel on the right edits the selected item.  Image and texture replacement
+The page opens on an overview of what is loaded and where to do what.  The tabs at the top
+go by kind of content rather than by file: *Screens*, *Images* (with their textures),
+*Colours*, *Texts*, *Fonts* and *Widgets* (the kinds of widget in a list on the left); where
+a kind is stored in more than one place, a switch above the list chooses.  Only the theme
+and language chosen in the top bar are listed.  The search box finds screens and texts by
+name, number or content, and every list has its own filter.  The panel on the right edits
+the selected item.  *Files* (top right) shows the open packages with what is in them and
+which have changes: undo, save or download, close, and open more (or drop files on the
+page).  Image and texture replacement
 takes PNG/GIF files (several files or an animated GIF become an animation), shows a quality
 preview for the chosen format, and keeps the display size and texture format like
 `gph set-image` does.  Every edit stays in memory (with undo) until *Save…* writes a
@@ -93,15 +103,24 @@ the firmware shows together comes from the unit's screen database:
 gph serve Graphics/ --screens RT6-Soft/Data_Base/Graphics/GraphicBase.RNEG.gz
 ```
 
-(or open that file, or a folder containing it, with *Open…*).  A *Screens* entry then lists
+(or open that file, or a folder containing it, with *Open…*).  The *Screens* tab then lists
 every screen of the unit by name and zone, and draws it in its place on the display:
 background, fixed texts and pictures, buttons, menus with the lines the firmware attaches
 to them, texts with their font and colour, with the top band and the other zones the unit
 shows around it (a proposal you can change: which zones go together is decided by the unit
 while it runs).  Each widget links to its item, and each item says on which screens it
 appears.  When the software update's `Application/MMI` folder sits next to the database,
-the screen names and owning modules are read from the firmware modules as well.  The
-server binds to localhost only and can read and write files on this machine, like any
+the screen names and owning modules are read from the firmware modules as well, and so is
+where every press leads.  The display of a screen can then be operated: click a menu line or
+a button, or use the keys under the display (the unit's dial and its ESC key; with the
+keyboard: arrows, Enter and Esc).  A press opens the screen the firmware names for it, the
+path you walked is shown under the display, and the widget list says for every line what a
+press does.  Where the firmware chooses between screens by the state of the unit (a route is
+active or not) you choose.  *Menu starts* in the screens list shows the screens a menu tree
+begins at.  Not known: presses another module handles, the unit's own keys (NAV, RADIO …)
+and which lines the unit hides.  `gph screens-names GraphicBase.RNEG.gz` saves the names and
+the transitions next to the database (`.names.json`, `.links.json`) for a host without the
+modules.  The server binds to localhost only and can read and write files on this machine, like any
 local tool; `--port` and `--host` change the address.
 
 ### Online version
@@ -118,7 +137,8 @@ docker build -t gph-editor . && docker run --rm -p 8765:8765 gph-editor
 
 Set `GPH_PRELOAD` to a mounted folder and every visitor starts with the GPH files found
 there (shared in memory, copied for a visitor as soon as they edit); a `GraphicBase.RNEG.gz`
-under that folder (or one named by `GPH_SCREENS`) gives everyone the Screens view.  None of
+under that folder (or one named by `GPH_SCREENS`) gives everyone the Screens view, with the
+names and transitions from the `.names.json` and `.links.json` saved next to it.  None of
 that is in the image: the unit's files are PSA/Magneti Marelli content.  Visitors can also
 upload those files themselves.
 

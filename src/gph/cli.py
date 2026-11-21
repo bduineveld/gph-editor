@@ -405,7 +405,9 @@ def cmd_preview(args):
 
 # ---------------------------------------------------------------------------
 def cmd_screens_names(args):
-    """Save the screen names found in the firmware modules next to the GraphicBase (``*.names.json``)."""
+    """Save what the firmware modules tell about the screens next to the GraphicBase: their names
+    (``*.names.json``) and where a press leads (``*.links.json``)."""
+    from . import transitions
     from .screens import ScreenDatabase, find_mmi_folder
     db = ScreenDatabase.load(args.graphicbase)
     mmi = args.mmi or find_mmi_folder(args.graphicbase)
@@ -418,6 +420,11 @@ def cmd_screens_names(args):
         json.dump(db.names_json(), fh, indent=0)
     s = db.summary()
     print(f"{out}: {s['named']} of {s['count']} screens named")
+    links = transitions.read_links(db, mmi)
+    out = out[:-len(".names.json")] + ".links.json" if out.endswith(".names.json") else out + ".links.json"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(transitions.links_to_json(links), fh, indent=0)
+    print(f"{out}: {sum(len(v) for v in links.values())} presses on {len(links)} screen{'' if len(links) == 1 else 's'}")
     return 0
 
 
@@ -578,8 +585,8 @@ def main(argv=None):
     out_args(s)
     s.set_defaults(fn=cmd_save)
 
-    s = sub.add_parser("screens-names", help="save the screen names from the firmware's MMI modules next to a GraphicBase.RNEG.gz "
-                       "(GraphicBase.RNEG.gz.names.json), so a server without the modules can show them")
+    s = sub.add_parser("screens-names", help="save the screen names and the screen transitions from the firmware's MMI modules "
+                       "next to a GraphicBase.RNEG.gz (.names.json and .links.json), so a server without the modules can show them")
     s.add_argument("graphicbase", help="Data_Base/Graphics/GraphicBase.RNEG.gz of the software update")
     s.add_argument("--mmi", help="Application/MMI folder (default: found next to the GraphicBase)")
     s.add_argument("-o", "--out", help="output file (default: <graphicbase>.names.json)")

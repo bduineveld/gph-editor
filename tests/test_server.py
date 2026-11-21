@@ -133,6 +133,10 @@ def test_edit_text_color_undo(client):
     assert r["file"]["undo"] == 1
     rows = client.ok("GET", f"/api/files/{lang}/items?section=TEXT2006")["items"]
     assert [x["index"] for x in rows] == [0, 2] and rows[1]["text"] == "Een\rTwee"
+    # undoing the only edit left leaves the file without unsaved changes
+    r = client.ok("POST", f"/api/files/{lang}/undo", {})
+    assert r["file"]["undo"] == 0 and not r["file"]["dirty"]
+    client.ok("POST", f"/api/files/{lang}/text/2", {"text": "Een\nTwee"})
 
     theme = _file(client, "GEN_HA09.gph")["id"]
     r = client.ok("POST", f"/api/files/{theme}/color/1", {"color": "#00ff0080"})
@@ -181,6 +185,8 @@ def test_save_revert_close(client, server, tmp_path):
     assert path.endswith("GEN_HA09.gph.bz2") and r["saved"]["inf"].endswith(".inf")
     assert InfFile.verify_files(path) == (True, True) and r["saved"]["inf_fields"]["VER"] == "26.10.28.12.00"
     assert not r["file"]["dirty"]
+    if r["file"]["undo"]:   # going back from what was saved is a change again
+        assert client.ok("POST", f"/api/files/{theme}/undo", {})["file"]["dirty"]
     g = GphFile.load(path)
     assert g.compressed and g.section("IMAG2000").items[0] is not None
     # revert reloads the original from disk

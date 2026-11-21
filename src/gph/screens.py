@@ -290,6 +290,9 @@ class ScreenDatabase:
         self._parse(elf)
         self._names_from_lists()
         self._uses: dict[tuple[str, int], list[int]] | None = None
+        #: where a press leads, ``{screen id: {object id: link}}``: read from the MMI modules, see gph.transitions
+        self.links: dict[int, dict[int, dict]] = {}
+        self._openers: dict[int, list[tuple[int, int]]] | None = None
 
     # -- loading --------------------------------------------------------------
     @classmethod
@@ -469,6 +472,20 @@ class ScreenDatabase:
                         self._uses[(o.section, o.index)].append(sid)
         return self._uses.get((section, index), [])
 
+    def set_links(self, links: dict[int, dict[int, dict]]) -> None:
+        self.links = {sid: items for sid, items in links.items() if sid in self.screens}
+        self._openers = None
+
+    def openers(self, sid: int) -> list[tuple[int, int]]:
+        """``(screen id, object id)`` of every press that can open screen ``sid``."""
+        if self._openers is None:
+            self._openers = collections.defaultdict(list)
+            for src, items in self.links.items():
+                for obj, ln in items.items():
+                    for to in ln["to"]:
+                        self._openers[to].append((src, obj))
+        return self._openers.get(sid, [])
+
     def family(self, sid: int) -> list[int]:
         """The other screens with the same name in another zone (the radio's main area, window
         and top band line ...)."""
@@ -526,7 +543,7 @@ class ScreenDatabase:
     def summary(self) -> dict:
         used = collections.Counter(s.zone_id for s in self.screens.values())
         return {"path": self.path, "version": self.version, "build": self.build, "count": len(self.screens),
-                "named": sum(1 for s in self.screens.values() if s.name),
+                "named": sum(1 for s in self.screens.values() if s.name), "links": len(self.links),
                 "zones": [dict(z.to_json(), count=used[z.id]) for z in ZONES.values() if used[z.id]]}
 
 

@@ -67,6 +67,7 @@ from .edit import (default_filename, get_fields, load_frames, set_color, set_ima
 from .encode import EncodeError
 from .inf import InfFile
 from .schema import IMAG_FLAGS, IMAG_STRETCH, SECTION_DESCRIPTIONS, TXCO_DESCRIPTIONS
+from . import transitions
 from .screens import DISPLAY, TEXT_LIST_SECTIONS, ScreenDatabase, ScreenError, find_graphic_base, find_mmi_folder
 from .workspace import Workspace
 
@@ -153,16 +154,23 @@ class OpenFile:
 
     def snapshot(self) -> None:
         self.unshare()
-        self.history.append([(s.name, list(s.items)) for s in self.file.sections])
+        # each state remembers whether it had unsaved changes, so undoing the only edit leaves the file clean
+        self.history.append(([(s.name, list(s.items)) for s in self.file.sections], self.dirty))
         del self.history[:-MAX_UNDO]
 
     def undo(self) -> bool:
         if not self.history:
             return False
-        state = self.history.pop()
+        state, was_dirty = self.history.pop()
         self.file.sections = [Section(name, items) for name, items in state]
         self.touch()
+        self.dirty = was_dirty
         return True
+
+    def saved(self) -> None:
+        """The content was written out: it is clean now, and every earlier state differs from what was written."""
+        self.dirty = False
+        self.history = [(state, True) for state, _ in self.history]
 
     def touch(self) -> None:
         self._items.clear()
@@ -237,7 +245,7 @@ class Editor:
 
     def open_screens(self, path: str) -> ScreenDatabase:
         """Load a GraphicBase.RNEG(.gz) and, when the firmware's ``Application/MMI`` folder sits
-        next to it, the screen names from the MMI modules."""
+        next to it, the screen names and the screen transitions from the MMI modules."""
         try:
             db = ScreenDatabase.load(path)
         except (ScreenError, OSError, ValueError) as e:
@@ -245,9 +253,14 @@ class Editor:
         mmi = find_mmi_folder(path)
         if mmi:
             db.enrich_from_modules(mmi)
-        elif os.path.exists(path + ".names.json"):   # names saved earlier with `gph screens-names` (no firmware needed)
-            with open(path + ".names.json", encoding="utf-8") as fh:
-                db.apply_names(json.load(fh))
+            db.set_links(transitions.read_links(db, mmi))
+        else:   # saved earlier with `gph screens-names` (no firmware modules needed)
+            if os.path.exists(path + ".names.json"):
+                with open(path + ".names.json", encoding="utf-8") as fh:
+                    db.apply_names(json.load(fh))
+            if os.path.exists(path + ".links.json"):
+                with open(path + ".links.json", encoding="utf-8") as fh:
+                    db.set_links(transitions.links_from_json(json.load(fh)))
         self.screens = db
         return db
 
@@ -509,7 +522,9 @@ class Editor:
     def screen_list(self) -> list[dict]:
         if self.screens is None:
             raise ApiError("no screen database open (open a GraphicBase.RNEG.gz of the unit's software)", 404)
-        return [sc.to_json(objects=False) for _sid, sc in sorted(self.screens.screens.items())]
+        db = self.screens
+        return [dict(sc.to_json(objects=False), presses=len(db.links.get(sid, ())), openers=len(db.openers(sid)))
+                for sid, sc in sorted(db.screens.items())]
 
     def _zone_rect(self, ws: Workspace, sc) -> list[int]:
         """Where a screen sits on the display: the rectangle of its background (the only widget
@@ -530,6 +545,35 @@ class Editor:
         sc = self.screens.screens[sid]
         return {"id": sid, "name": sc.name, "zone": sc.zone_id, "zone_name": sc.zone.name if sc.zone else None}
 
+    def _press(self, link: dict, sc) -> dict:
+        """A link of gph.transitions for the UI: the screens it can open as references, and the
+        name the firmware gives the item (``Action_EVT_MENU_ITEM_NAV_M1_Z1_0_Map_Management_SI`` -> "Map Management")."""
+        known = self.screens.screens
+        action, item = link["action"] or "", None
+        cut = action.find(f"_{sc.name}_") if sc.name else -1
+        if cut >= 0:
+            item = action[cut + len(sc.name) + 2:].removesuffix("_SI").replace("_", " ").strip() or None
+        return {"action": link["action"], "item": item, "to": [self._screen_ref(t) if t in known else {"id": t, "name": None, "missing": True} for t in link["to"]],
+                "back": link["back"], "var": link["var"]}
+
+    def _object_label(self, ws: Workspace, sc, obj_id: int) -> str | None:
+        """What the user reads on an object of a screen (the text of a menu line or button), if any."""
+        for o in sc.objects:
+            if o.obj_id != obj_id:
+                continue
+            texts = [(ws.text_index(Link("GEN ", v)) or [None])[0] for v in o.values] if o.is_menu_line or o.section in TEXT_LIST_SECTIONS else []
+            if not texts and o.section and ws.common is not None:
+                it = ws.item(ws.common, o.section, o.index)
+                for key in ("text_index", "text_indexes"):
+                    v = it.fields.get(key) if it is not None else None
+                    for ln in (v if isinstance(v, list) else [v]):
+                        if isinstance(ln, Link) and not ln.is_null:
+                            texts += [t for t in (ws.text_index(ln) or []) if t]
+            label = next((t.replace("\r", " ").strip() for t in texts if t and t.strip()), None)
+            if label:
+                return label
+        return None
+
     def screen_detail(self, sid: int) -> dict:
         """One screen with every widget decoded (fields + resolved links) so the UI can draw it.
 
@@ -545,6 +589,7 @@ class Editor:
         ws = self.workspace()
         of = self._of_for(ws.common)
         list_texts = lambda o: [(ws.text_index(Link("GEN ", v)) or [None])[0] for v in o.values]
+        links = self.screens.links.get(sid, {})
         objects = []
         for n, o in enumerate(sc.objects):
             j = o.to_json()
@@ -564,12 +609,17 @@ class Editor:
             lines = [ln for ln in sc.objects if ln.menu == n]
             if lines:
                 j["lines"] = [{"obj": ln.obj_id, "list": ln.list_name, "texts": list_texts(ln)} for ln in lines]
+            if o.obj_id in links:
+                j["press"] = self._press(links[o.obj_id], sc)
             objects.append(j)
         d = sc.to_json(objects=False)
         d.update(objects=objects, common_file=of.id if of else None, rect=self._zone_rect(ws, sc),
                  zone_info=sc.zone.to_json() if sc.zone else None,
                  family=[self._screen_ref(i) for i in self.screens.family(sid)],
-                 companions=[self._screen_ref(i) for i in self.screens.companions(sid)])
+                 companions=[self._screen_ref(i) for i in self.screens.companions(sid)],
+                 has_links=sid in self.screens.links,
+                 openers=[dict(self._screen_ref(src), obj=obj, label=self._object_label(ws, self.screens.screens[src], obj))
+                          for src, obj in self.screens.openers(sid)])
         return d
 
     def _list_image(self, ws: Workspace, index: int) -> dict:
@@ -697,7 +747,7 @@ class Editor:
             inf_path = write_package(of.file, out, version=version or None, inf=inf)
         except OSError as e:
             raise ApiError(str(e))
-        of.dirty = False
+        of.saved()
         r = {"path": os.path.abspath(out), "size": os.path.getsize(out), "inf": inf_path}
         if inf_path:
             r["inf_fields"] = InfFile.load(inf_path).fields
@@ -715,7 +765,7 @@ class Editor:
                 z.write(out, name)
                 if inf_path:
                     z.write(inf_path, os.path.basename(inf_path))
-        of.dirty = False
+        of.saved()
         return name.replace(".gph.bz2", "") + ".zip", buf.getvalue()
 
 

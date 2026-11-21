@@ -26,6 +26,9 @@ tools/firmware/*.elf
 tools/firmware/*.bin
 tools/firmware/*.gz
 tools/firmware/screens.json
+# what `gph screens-names` saves next to a GraphicBase (derived from the firmware)
+*.names.json
+*.links.json
 
 # AppleDouble files on exFAT volumes
 ._*
