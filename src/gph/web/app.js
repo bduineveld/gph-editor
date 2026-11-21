@@ -685,6 +685,12 @@ function layerItems(sc, onPick, sim) {
       items.push(it);
     }
   }
+  // texts that start at the same point are alternatives the unit picks from (the strip under the map: a street
+  // name, or a label with its value).  Where one of them has a text of its own, the other gets no sample text.
+  const real = new Set(items.filter((it) => it.type === "text" && !it.placeholder && it.text && it.text.trim()).map((it) => it.x + "," + it.y));
+  for (const it of items) if (it.type === "text" && it.placeholder && real.has(it.x + "," + it.y)) {
+    it.placeholder = false; it.empty = true; it.text = ""; it.label += " (no sample: another text starts here)";
+  }
   // the frame goes around the largest part of the widget the cursor is on (a button's picture, a list's rows)
   const mine = items.filter((it) => it.mine).sort((a, b) => b.w * b.h - a.w * a.h)[0];
   if (mine) mine.focus = true;
@@ -1334,23 +1340,32 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
       break;
     }
     case "LIST": {
-      // C_List in BCM_GPH: the rows are clipped to the box at (left_margin, top_margin) of visible_width x
-      // visible_height and follow each other at font height + vertical_spacing.  The cursor sits around the
-      // row it marks; where exactly is read off photos of a unit (it starts 18 left of the text).
+      // C_List in BCM_GPH (Create, SetItems, SetObjects, ComputeEnd, Draw), drawn in the unit's order:
+      // background, cursor, rows, scrollbar.  The rows are clipped to the box at (left_margin, top_margin)
+      // of visible_width x visible_height and follow each other at font height + vertical_spacing; a column
+      // starts at left_margin + column_position.  The cursor image starts at the list's own x (its picture
+      // leaves room for the scrollbar on the left) and is centred on the row it marks.  The scrollbar's
+      // slider lies scrollbar_shift below its background.
       img(r.background, x, y, "background");
       const fh = fontH(r.font), pitch = fh + (f.vertical_spacing || 0);
       const lx = x + (f.left_margin || 0), ly = y + (f.top_margin || 0);
-      img(r.scrollbar_bg, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar background");
-      img(r.scrollbar, x + (f.scrollbar_dx || 0), y + (f.scrollbar_dy || 0), "scrollbar");
       const cur = !(extra && extra.noCursor) && r.cursor && r.cursor.kind === "image" ? r.cursor : null;
-      if (cur) items.push({ type: "img", x: lx - 18, y: ly + Math.floor(fh / 2) - Math.floor(cur.height / 2), w: Math.min(cur.width, (f.visible_width || cur.width) + 36), h: cur.height,
-        url: cur.gif || cur.url, label: "cursor (place estimated)" });
+      if (cur) img(cur, x, ly + Math.floor(fh / 2) - Math.floor(cur.height / 2), "cursor");
       box(lx, ly, f.visible_width, f.visible_height, "visible area");
-      const rows = Math.max(1, Math.min(12, Math.ceil((f.visible_height || pitch) / pitch)));
-      const pos = f.column_position || [0], size = f.column_size || [f.visible_width || 200];
+      const vh = f.visible_height || pitch;
+      const rows = Math.max(1, Math.min(12, Math.ceil(vh / pitch)));
+      const pos = f.column_position || [0], size = f.column_size || [f.visible_width || 200], al = f.column_alignment || [];
       for (let n = 0; n < rows; n++) pos.forEach((px, c) => {
-        if ((size[c] || 0) >= 20) text(lx + px, ly + n * pitch, size[c], null, n || (extra && extra.noCursor) ? r.not_selected_color : r.selected_color, r.font, `row ${n + 1}${pos.length > 1 ? `, column ${c + 1}` : ""}`, 0);
+        if ((size[c] || 0) < 20) return;   // a column of no width (most lists start with one) shows nothing
+        // column alignment counts like a text's: 0 centred, 1 left, 2 right (all factory lists have 1)
+        anchored(lx + px, ly + n * pitch, size[c], null, n || (extra && extra.noCursor) ? r.not_selected_color : r.selected_color, r.font,
+          `row ${n + 1}${pos.length > 1 ? `, column ${c + 1}` : ""}`, al[c] != null ? al[c] & 3 : 1);
+        const cut = (n * pitch + fh) - vh;   // the part of the last row that falls outside the box is not drawn
+        if (cut > 0) items[items.length - 1].cut = Math.min(cut, fh);
       });
+      const sx = x + (f.scrollbar_dx || 0), sy = y + (f.scrollbar_dy || 0);
+      img(r.scrollbar_bg, sx, sy, "scrollbar background");
+      img(r.scrollbar, sx, sy + (f.scrollbar_shift || 0), "scrollbar slider (at the top; its length follows the number of rows)");
       break;
     }
     case "EDTB": {
@@ -1375,7 +1390,8 @@ function stageItems(section, f, r, stateNo = 0, extra = null) {
 /** Draw stage items (from stageItems) into a stage element, shifted by ox/oy screen pixels. */
 function paintItems(stage, items, ox, oy, rev) {
   for (const it of items) {
-    const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px` + (it.onclick ? ";cursor:pointer" : "");
+    const st = `left:${it.x + ox}px;top:${it.y + oy}px;width:${it.w}px;height:${it.h}px` + (it.onclick ? ";cursor:pointer" : "")
+      + (it.cut ? `;clip-path:inset(0 0 ${it.cut}px 0)` : "");
     const attrs = it.obj != null ? { "data-obj": it.obj } : {};
     if (it.onclick) attrs.onclick = it.onclick;
     if (it.type === "img") stage.append(h("img", { class: "stage-img" + (it.focus ? " focus" : ""), src: it.url + (it.url.includes("?") ? "&" : "?") + "v=" + rev, alt: "", title: `${it.label} @ ${it.x},${it.y} ${it.w}×${it.h}`, style: st, ...attrs }));

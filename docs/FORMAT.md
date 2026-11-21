@@ -424,10 +424,24 @@ the lines after it move up.  Photos of a unit agree: the five lines of the map m
 the factory's contextual menus all turn out centred on the same height (y 21 with six lines of
 41, y 97 with two of 48 …).
 
-A list (`LIST2001`, `C_List`) clips its rows to the box of `visible_width` × `visible_height` at
-(`left_margin`, `top_margin`) and puts them `font height + vertical_spacing` apart; columns start
-at `column_position`.  On the photos the cursor starts 18 left of the text and is about
-`visible_width` + 36 wide; that part is read off the photos, not the code.
+A list (`LIST2001`, `C_List`: `Create`, `SetItems`, `SetObjects`, `ComputeEnd`, `Draw`) is drawn in
+this order: background, cursor, rows, scrollbar.  Everything counts from the list's own `x`, `y`:
+
+- the rows are clipped to the box of `visible_width` × `visible_height` at (`left_margin`,
+  `top_margin`); row n starts at `top_margin + n × (font height + vertical_spacing)` and the list
+  keeps `visible_height / pitch + 2` rows ready, so a last row that fits only partly is cut off;
+- a column starts at `left_margin + column_position[c]` and is `column_size[c]` wide; its alignment
+  counts like a text's (0 centred, 1 left, 2 right; every factory list has 1).  Most lists start
+  with a column 1 wide that shows nothing;
+- the cursor image starts at x = 0, not at the text: its picture is empty where the scrollbar
+  lies (the first 36 of 700), so the visible part starts right of the scrollbar and about 20 left
+  of the text.  Like a menu's, it is centred on the row it marks (`font height / 2 − cursor
+  height / 2` from the row's top) and is not clipped;
+- the scrollbar's background lies at (`scrollbar_dx`, `scrollbar_dy`) and already holds the two
+  arrows; the slider lies `scrollbar_shift` lower and its length follows the number of rows.
+
+`style` is a set of bits: 1 background, 2 scrollbar, 8 cursor, 16 images, 64 looped text.  A photo
+of the unit's station list agrees: the cursor begins against the scrollbar, the text 20 further.
 
 Every line of a text with line breaks is aligned on its own: a centred popup message has all its
 lines centred.
